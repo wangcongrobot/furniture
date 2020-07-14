@@ -1786,9 +1786,9 @@ class FurnitureEnv(metaclass=EnvMeta):
             from env.models.robots import HDT
 
             self.mujoco_robot = HDT(use_torque=use_torque)
-            self.gripper = gripper_factory("HDTGripper")
-            self.gripper.hide_visualization()
-            self.mujoco_robot.add_gripper("right_hand", self.gripper)
+            self.gripper = {"right": gripper_factory("HDTGripper")}
+            self.gripper["right"].hide_visualization()
+            self.mujoco_robot.add_gripper("right_hand", self.gripper["right"])
             self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
             self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
 
@@ -2031,8 +2031,10 @@ class FurnitureEnv(metaclass=EnvMeta):
             config.furniture_id = furniture_name2id[config.furniture_name]
         self.reset(config.furniture_id, config.background)
         if self._record_vid:
+            print("record_vid")
             self.vid_rec.capture_frame(self.render("rgb_array")[0])
         else:
+            print("render")
             self.render("rgb_array")[0]
         with open(self._load_demo, "rb") as f:
             demo = pickle.load(f)
@@ -2256,6 +2258,7 @@ class FurnitureEnv(metaclass=EnvMeta):
 
         if self._record_vid:
             self.vid_rec.capture_frame(self.render("rgb_array")[0])
+            
         else:
             self.render()
 
@@ -2265,7 +2268,6 @@ class FurnitureEnv(metaclass=EnvMeta):
 
             assert self._config.render, "Set --render True for manual control"
             glfw.set_key_callback(self._viewer.window, self.key_callback)
-
         cursor_idx = 0
         flag = [-1, -1]
         t = 0

@@ -17,7 +17,7 @@ class VideoRecorder(object):
 
     def __init__(
         self,
-        record_mode="RAM",  # ram or file
+        record_mode="file",  # RAM or file
         video_dir="./videos",
         prefix="default",
         demo_dir=None,
@@ -58,6 +58,7 @@ class VideoRecorder(object):
         if data is from env.render(), we will need to convert it to 0-255
         if data is rgb array, then no need to convert
         """
+        print("video record capture frame")
         if self._record_mode == "RAM":
             if render_mode == "rgb_array":
                 self._frames.append(frame)
@@ -65,8 +66,10 @@ class VideoRecorder(object):
                 self._frames.append(255 * frame)
         elif self._record_mode == "file":
             if render_mode == "rgb_array":
+                print("file: rgb_array")
                 self._encode_image_frame(frame)
             elif render_mode == "from_env_render":
+                print("file: from_env_render")
                 self._encode_image_frame((255 * frame).astype("uint8"))
 
     def _encode_image_frame(self, frame):

@@ -1,13 +1,14 @@
 """
-Gripper for Franka's Panda (has two fingers).
+Gripper for HDT Global's HDT Angler (has two fingers).
 """
 import numpy as np
 from env.mjcf_utils import xml_path_completion
 from env.models.grippers.gripper import Gripper
 
+
 class HDTGripperBase(Gripper):
     """
-    Gripper for Franka's Panda (has two fingers).
+    Gripper for HDT Global's HDT Angler (has two fingers).
     """
 
     def __init__(self):

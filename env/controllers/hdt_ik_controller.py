@@ -193,18 +193,18 @@ class HDTIKController(Controller):
             ik_solution = list(
                 p.calculateInverseKinematics(
                     self.ik_robot,
-                    5,
+                    9,
                     target_position,
                     targetOrientation=target_orientation,
                     restPoses=[0, 0, 0, 0, 0, 0],
-                    jointDamping=[0.2] * 6,
+                    # jointDamping=[0.2] * 9,
                 )
             )
         else:
             ik_solution = list(
                 p.calculateInverseKinematics(
                     self.ik_robot,
-                    5,
+                    9,
                     target_position,
                     targetOrientation=target_orientation,
                     lowerLimits=[-6.28, -6.28, -6.28, -6.28, -6.28, -6.28],
@@ -260,7 +260,7 @@ class HDTIKController(Controller):
 
         for bullet_i in range(20):
             arm_joint_pos = self.inverse_kinematics(
-                world_targets[0], world_targets[1], rest_poses=rest_poses
+                world_targets[0], world_targets[1], # rest_poses=rest_poses
             )
             self.sync_ik_robot(arm_joint_pos, sync_last=True)
 

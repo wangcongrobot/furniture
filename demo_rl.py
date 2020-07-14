@@ -129,7 +129,7 @@ class FurnitureExampleEnv(FurnitureHDTEnv):
         ctrl_reward = self._ctrl_reward(a)
 
         # distance-based reward
-        hand_pos = np.array(self.sim.data.site_xpos[self.eef_site_id])
+        hand_pos = np.array(self.sim.data.site_xpos[self.eef_site_id["right"]])
         dist = T.l2_dist(hand_pos, self._get_pos(self._target_body))
         distance_reward = -self._env_config["distance_reward"] * dist
 
