@@ -1058,7 +1058,7 @@ class FurnitureEnv(metaclass=EnvMeta):
                 self.sim.data.qvel[qvel_addr] = 0.0
             self.sim.forward()
 
-            if self._agent_type in ["Sawyer", "Panda", "Jaco"]:
+            if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
                 action[:3] = action[:3] * self._move_speed
                 action[:3] = [-action[1], action[0], action[2]]
                 gripper_pos = self.sim.data.get_body_xpos("right_hand")
@@ -1113,13 +1113,16 @@ class FurnitureEnv(metaclass=EnvMeta):
             elif self._agent_type == "Jaco":
                 velocities = self._controller.get_control(**input_1)
                 low_action = np.concatenate([velocities] + [action[7:]] * 3)
+            elif self._agent_type == "HDT":
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities] + [action[7:]] * 3)                
             elif self._agent_type == "Baxter":
                 input_2 = self._make_input(action[7:14], self._left_hand_quat)
                 velocities = self._controller.get_control(input_1, input_2)
                 low_action = np.concatenate([velocities, action[14:16]])
             else:
                 raise Exception(
-                    "Only Sawyer, Panda, Jaco, Baxter robot environments are supported for IK "
+                    "Only Sawyer, Panda, Jaco, HDT, Baxter robot environments are supported for IK "
                     "control currently."
                 )
 
@@ -1133,6 +1136,8 @@ class FurnitureEnv(metaclass=EnvMeta):
                     if self._agent_type in ["Sawyer", "Panda"]:
                         low_action = np.concatenate([velocities, action[7:]])
                     elif self._agent_type == "Jaco":
+                        low_action = np.concatenate([velocities] + [action[7:]] * 3)
+                    elif self._agent_type == "HDT":
                         low_action = np.concatenate([velocities] + [action[7:]] * 3)
                     elif self._agent_type == "Baxter":
                         low_action = np.concatenate([velocities, action[14:]])
@@ -1258,7 +1263,7 @@ class FurnitureEnv(metaclass=EnvMeta):
                 self._set_qpos(body, pos, quat)
                 self._stop_object(body, gravity=0)
         # set robot positions
-        if self._agent_type in ["Sawyer", "Panda", "Jaco"]:
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
             if (
                 "l_gripper" in given_qpos
                 and "r_gripper" not in given_qpos
@@ -1471,7 +1476,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         if self._record_demo:
             self._store_qpos()
 
-        if self._agent_type in ["Sawyer", "Panda", "Jaco", "Baxter"]:
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT", "Baxter"]:
             self._initial_right_hand_quat = self._right_hand_quat
             if self._agent_type == "Baxter":
                 self._initial_left_hand_quat = self._left_hand_quat
@@ -1498,7 +1503,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         Initializes robot posision with random noise perturbation
         """
         noise = self._init_random(self.mujoco_robot.init_qpos.shape, "agent")
-        if self._agent_type in ["Sawyer", "Panda", "Jaco"]:
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
             self.sim.data.qpos[self._ref_joint_pos_indexes] = (
                 self.mujoco_robot.init_qpos + noise
             )
@@ -1525,7 +1530,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         """
         Stores current qposition for demonstration
         """
-        if self._agent_type in ["Sawyer", "Panda", "Jaco"]:
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
             qpos = {
                 "qpos": self.sim.data.qpos[self._ref_joint_pos_indexes],
                 "l_gripper": self.sim.data.qpos[self._ref_gripper_joint_pos_indexes],
@@ -1606,6 +1611,8 @@ class FurnitureEnv(metaclass=EnvMeta):
                 from env.controllers import PandaIKController as IKController
             elif self._agent_type == "Jaco":
                 from env.controllers import JacoIKController as IKController
+            elif self._agent_type == "HDT":
+                from env.controllers import HDTIKController as IKController                
             else:
                 raise ValueError
 
@@ -1644,6 +1651,16 @@ class FurnitureEnv(metaclass=EnvMeta):
 
             self.mujoco_robot = Jaco(use_torque=use_torque)
             self.gripper = gripper_factory("JacoGripper")
+            self.gripper.hide_visualization()
+            self.mujoco_robot.add_gripper("right_hand", self.gripper)
+            self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
+            self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
+
+        elif self._agent_type == "HDT":
+            from env.models.robots import HDT
+
+            self.mujoco_robot = HDT(use_torque=use_torque)
+            self.gripper = gripper_factory("HDTGripper")
             self.gripper.hide_visualization()
             self.mujoco_robot.add_gripper("right_hand", self.gripper)
             self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
@@ -2036,7 +2053,7 @@ class FurnitureEnv(metaclass=EnvMeta):
                         [flag[1], action[7]],
                     ]
                 )
-            elif self._agent_type in ["Sawyer", "Panda", "Jaco"]:
+            elif self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
                 action[:6] = d_p1[:6]
                 action = action[:8]
                 action[6] = flag[0]
@@ -2171,7 +2188,7 @@ class FurnitureEnv(metaclass=EnvMeta):
                             ]
                         )
                 elif self._control_type == "ik":
-                    if self._agent_type in ["Sawyer", "Panda", "Jaco"]:
+                    if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
                         action = action[:8]
                         action[6] = flag[0]
                     elif self._agent_type == "Baxter":
@@ -2508,7 +2525,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         """
         Returns the cursor positions
         """
-        if self._agent_type in ["Sawyer", "Panda", "Jaco", "Baxter"]:
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT", "Baxter"]:
             return self.sim.data.site_xpos[self.eef_site_id]
         elif self._agent_type == "Cursor":
             if name:
@@ -2734,7 +2751,7 @@ class FurnitureEnv(metaclass=EnvMeta):
             action = np.clip(action, -1, 1)
 
         arm_action = action[: self.mujoco_robot.dof]
-        if self._agent_type in ["Sawyer", "Panda", "Jaco"]:
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
             gripper_action_in = action[
                 self.mujoco_robot.dof : self.mujoco_robot.dof + self.gripper.dof
             ]

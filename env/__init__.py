@@ -8,6 +8,7 @@ from env.furniture_sawyer import FurnitureSawyerEnv
 from env.furniture_cursor import FurnitureCursorEnv
 from env.furniture_jaco import FurnitureJacoEnv
 from env.furniture_panda import FurniturePandaEnv
+from env.furniture_hdt import FurnitureHDTEnv
 
 from env.furniture_baxter_block import FurnitureBaxterBlockEnv
 from env.furniture_cursor_toytable import FurnitureCursorToyTableEnv
@@ -61,6 +62,17 @@ register(
     entry_point="env.furniture_gym:FurnitureGym",
     kwargs={
         "name": "FurnitureJacoEnv",
+        "furniture_id": 1,
+        "background": "Interior",
+        "port": 1050,
+    },
+)
+
+register(
+    id="furniture-hdt-v0",
+    entry_point="env.furniture_gym:FurnitureGym",
+    kwargs={
+        "name": "FurnitureHDTEnv",
         "furniture_id": 1,
         "background": "Interior",
         "port": 1050,

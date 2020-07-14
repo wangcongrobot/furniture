@@ -55,10 +55,10 @@ def main(args):
 
     # load demo file for playback
     demo = args.load_demo = input(
-        "Input path to demo file, such as demos/Sawyer_swivel_chair_0700.pkl: "
+        "Input path to demo file, such as demos/Sawyer_toy_table_0000.pkl: "
     )
     if demo == "":
-        demo = args.load_demo = "demos/Sawyer_swivel_chair_0700_0000.pkl"
+        demo = args.load_demo = "demos/Sawyer_toy_table_0000.pkl"
 
     agent_name, furniture_name = parse_demo_file_name(demo)
     furniture_id = furniture_name2id[furniture_name]
@@ -177,7 +177,7 @@ def main(args):
             env._set_qpos(body, pos, quat)
             env._stop_object(body, gravity=0)
         # set robot positions
-        if env._agent_type in ["Sawyer", "Panda", "Jaco"]:
+        if env._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
             env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos["qpos"]
             env.sim.data.qpos[env._ref_gripper_joint_pos_indexes] = qpos["l_gripper"]
         elif env._agent_type == "Baxter":

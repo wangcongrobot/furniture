@@ -62,7 +62,7 @@ def argsparser():
     from util import str2bool
 
     parser = argparse.ArgumentParser("Demo for IKEA Furniture Assembly Environment")
-    parser.add_argument("--env_id", type=str, default="furniture-baxter-v0")
+    parser.add_argument("--env_id", type=str, default="furniture-hdt-v0")
     parser.add_argument("--num_env", type=int, default=1)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--debug", type=str2bool, default=False)

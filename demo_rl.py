@@ -23,11 +23,12 @@ from collections import OrderedDict
 import numpy as np
 
 from env.furniture_baxter import FurnitureBaxterEnv
+from env.furniture_hdt import FurnitureHDTEnv
 from env.models import furniture_names, background_names, agent_names, furniture_name2id
 import env.transform_utils as T
 
 
-class FurnitureExampleEnv(FurnitureBaxterEnv):
+class FurnitureExampleEnv(FurnitureHDTEnv):
     """
     Baxter robot environment with a reaching task as an example.
     """
@@ -104,17 +105,17 @@ class FurnitureExampleEnv(FurnitureBaxterEnv):
         Takes a simulation step with action @a.
         """
         # zero out left arm's action and only use right arm
-        a[6:12] = 0
+        # a[6:12] = 0
 
         # simulate action @a
-        ob, _, _, _ = super(FurnitureBaxterEnv, self)._step(a)
+        ob, _, _, info = super(FurnitureHDTEnv, self)._step(a)
 
         # compute your own reward
         reward, done, info = self._compute_reward(a)
 
         # store some information for log
-        info["right_arm_action"] = a[0:6]
-        info["right_gripper_action"] = a[12]
+        # info["right_arm_action"] = a[0:6]
+        # info["right_gripper_action"] = a[12]
 
         return ob, reward, done, info
 
@@ -128,7 +129,7 @@ class FurnitureExampleEnv(FurnitureBaxterEnv):
         ctrl_reward = self._ctrl_reward(a)
 
         # distance-based reward
-        hand_pos = np.array(self.sim.data.site_xpos[self.right_eef_site_id])
+        hand_pos = np.array(self.sim.data.site_xpos[self.eef_site_id])
         dist = T.l2_dist(hand_pos, self._get_pos(self._target_body))
         distance_reward = -self._env_config["distance_reward"] * dist
 
