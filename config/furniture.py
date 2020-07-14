@@ -1,3 +1,5 @@
+import argparse
+
 from util import str2bool, str2intlist
 from env.models import furniture_names, furniture_ids, background_names
 
@@ -53,7 +55,17 @@ def add_argument(parser):
         "--control_type",
         type=str,
         default="ik",
-        choices=["ik", "impedance", "torque"],
+        choices=[
+            "ik",
+            "ik_quaternion",
+            "impedance",
+            "torque",
+            "position",
+            "position_orientation",
+            "joint_velocity",
+            "joint_impedance",
+            "joint_torque",
+        ],
         help="control type of agent",
     )
     parser.add_argument(
@@ -147,6 +159,31 @@ def add_argument(parser):
         help="variance in size of furniture at episode start, ranging from size*(1-rand) to size*(1+rand)",
     )
     parser.add_argument(
+        "--alignment_pos_dist",
+        type=float,
+        default=0.1,
+        help="threshold for checking alignment",
+    )
+    parser.add_argument(
+        "--alignment_rot_dist_up",
+        type=float,
+        default=0.9,
+        help="threshold for checking alignment",
+    )
+    parser.add_argument(
+        "--alignment_rot_dist_forward",
+        type=float,
+        default=0.9,
+        help="threshold for checking alignment",
+    )
+    parser.add_argument(
+        "--alignment_project_dist",
+        type=float,
+        default=0.3,
+        help="threshold for checking alignment",
+    )
+
+    parser.add_argument(
         "--robot_ob",
         type=str2bool,
         default=True,
@@ -157,6 +194,12 @@ def add_argument(parser):
         type=str2bool,
         default=True,
         help="includes object pose in observation",
+    )
+    parser.add_argument(
+        "--object_ob_all",
+        type=str2bool,
+        default=True,
+        help="includes all object pose in observation",
     )
     parser.add_argument(
         "--visual_ob",
@@ -182,22 +225,20 @@ def add_argument(parser):
         default=False,
         help="includes object segmentation for camera",
     )
-    parser.add_argument(
-        "--screen_width", type=int, default=500, help="width of camera image"
-    )
-    parser.add_argument(
-        "--screen_height", type=int, default=500, help="height of camera image"
-    )
+    try:
+        parser.add_argument(
+            "--screen_width", type=int, default=500, help="width of camera image"
+        )
+        parser.add_argument(
+            "--screen_height", type=int, default=500, help="height of camera image"
+        )
+    except:
+        pass
     parser.add_argument(
         "--camera_ids", type=str2intlist, default=[0], help="MuJoCo camera id list"
     )
     parser.add_argument(
         "--render", type=str2bool, default=False, help="whether to render camera"
-    )
-
-    # vr controller
-    parser.add_argument(
-        "--wrist_only", type=str2bool, default=False, help="fix rotation to robot wrist"
     )
 
     # debug
@@ -222,9 +263,6 @@ def get_default_config():
     """
     Gets default configurations for the furniture assembly environment.
     """
-    import argparse
-    from util import str2bool
-
     parser = argparse.ArgumentParser(
         "Default Configuration for IKEA Furniture Assembly Environment"
     )
@@ -233,5 +271,5 @@ def get_default_config():
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--debug", type=str2bool, default=False)
 
-    config = parser.parse_args([])
+    config, unparsed = parser.parse_known_args()
     return config

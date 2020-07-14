@@ -38,7 +38,7 @@ class FurnitureBaxterEnv(FurnitureEnv):
                 ob_space.spaces["robot_ob"] = gym.spaces.Box(
                     low=-np.inf, high=np.inf, shape=(64,),
                 )
-            elif self._control_type == "ik":
+            elif self._control_type in ["ik", "ik_quaternion"]:
                 ob_space.spaces["robot_ob"] = gym.spaces.Box(
                     low=-np.inf, high=np.inf, shape=((3 + 4 + 3 + 3 + 1) * 2,),
                 )
@@ -55,6 +55,8 @@ class FurnitureBaxterEnv(FurnitureEnv):
             dof = (7 + 2) * 2
         elif self._control_type == "ik":
             dof = (3 + 3 + 1) * 2 + 1  # (move, rotate, select) * 2 + connect
+        elif self._control_type == "ik_quaternion":
+            dof = (3 + 4 + 1) * 2 + 1  # (move, rotate, select) * 2 + connect
         return dof
 
     def _step(self, a):
@@ -106,74 +108,58 @@ class FurnitureBaxterEnv(FurnitureEnv):
         if self._robot_ob:
             robot_states = OrderedDict()
             if self._control_type == "impedance":
-                robot_states["joint_pos"] = np.array(
-                    [self.sim.data.qpos[x] for x in self._ref_joint_pos_indexes]
-                )
-                robot_states["joint_vel"] = np.array(
-                    [self.sim.data.qvel[x] for x in self._ref_joint_vel_indexes]
-                )
-                robot_states["right_gripper_qpos"] = np.array(
-                    [
-                        self.sim.data.qpos[x]
-                        for x in self._ref_gripper_right_joint_pos_indexes
-                    ]
-                )
-                robot_states["right_gripper_qvel"] = np.array(
-                    [
-                        self.sim.data.qvel[x]
-                        for x in self._ref_gripper_right_joint_vel_indexes
-                    ]
-                )
-                robot_states["left_gripper_qpos"] = np.array(
-                    [
-                        self.sim.data.qpos[x]
-                        for x in self._ref_gripper_left_joint_pos_indexes
-                    ]
-                )
-                robot_states["left_gripper_qvel"] = np.array(
-                    [
-                        self.sim.data.qvel[x]
-                        for x in self._ref_gripper_left_joint_vel_indexes
-                    ]
+                for arm in self._arms:
+                    robot_states[arm + "_joint_pos"] = np.array(
+                        [
+                            self.sim.data.qpos[x]
+                            for x in self._ref_joint_pos_indexes[arm]
+                        ]
+                    )
+                for arm in self._arms:
+                    robot_states[arm + "_joint_vel"] = np.array(
+                        [
+                            self.sim.data.qvel[x]
+                            for x in self._ref_joint_vel_indexes[arm]
+                        ]
+                    )
+                for arm in self._arms:
+                    robot_states[arm + "_gripper_qpos"] = np.array(
+                        [
+                            self.sim.data.qpos[x]
+                            for x in self._ref_gripper_joint_pos_indexes[arm]
+                        ]
+                    )
+                    robot_states[arm + "_gripper_qvel"] = np.array(
+                        [
+                            self.sim.data.qvel[x]
+                            for x in self._ref_gripper_joint_vel_indexes[arm]
+                        ]
+                    )
+
+            for arm in self._arms:
+                gripper_qpos = [
+                    self.sim.data.qpos[x]
+                    for x in self._ref_gripper_joint_pos_indexes[arm]
+                ]
+                robot_states[arm + "_gripper_dis"] = np.array(
+                    [abs(gripper_qpos[0] - gripper_qpos[1])]
                 )
 
-            right_gripper_qpos = [
-                self.sim.data.qpos[x] for x in self._ref_gripper_right_joint_pos_indexes
-            ]
-            left_gripper_qpos = [
-                self.sim.data.qpos[x] for x in self._ref_gripper_left_joint_pos_indexes
-            ]
-            robot_states["right_gripper_dis"] = np.array(
-                [abs(right_gripper_qpos[0] - right_gripper_qpos[1])]
-            )
-            robot_states["left_gripper_dis"] = np.array(
-                [abs(left_gripper_qpos[0] - left_gripper_qpos[1])]
-            )
-            robot_states["right_eef_pos"] = np.array(
-                self.sim.data.site_xpos[self.right_eef_site_id]
-            )
-            robot_states["right_eef_velp"] = np.array(
-                self.sim.data.site_xvelp[self.right_eef_site_id]
-            )  # 3-dim
-            robot_states["right_eef_velr"] = self.sim.data.site_xvelr[
-                self.right_eef_site_id
-            ]  # 3-dim
-            robot_states["left_eef_pos"] = np.array(
-                self.sim.data.site_xpos[self.left_eef_site_id]
-            )
-            robot_states["left_eef_velp"] = np.array(
-                self.sim.data.site_xvelp[self.left_eef_site_id]
-            )  # 3-dim
-            robot_states["left_eef_velr"] = self.sim.data.site_xvelr[
-                self.left_eef_site_id
-            ]  # 3-dim
+            for arm in self._arms:
+                robot_states[arm + "_eef_pos"] = np.array(
+                    self.sim.data.site_xpos[self.eef_site_id[arm]]
+                )
+                robot_states[arm + "_eef_velp"] = np.array(
+                    self.sim.data.site_xvelp[self.eef_site_id[arm]]
+                )  # 3-dim
+                robot_states[arm + "_eef_velr"] = self.sim.data.site_xvelr[
+                    self.eef_site_id[arm]
+                ]  # 3-dim
 
-            robot_states["right_eef_quat"] = T.convert_quat(
-                self.sim.data.get_body_xquat("right_hand"), to="xyzw"
-            )
-            robot_states["left_eef_quat"] = T.convert_quat(
-                self.sim.data.get_body_xquat("left_hand"), to="xyzw"
-            )
+            for arm in self._arms:
+                robot_states[arm + "_eef_quat"] = T.convert_quat(
+                    self.sim.data.get_body_xquat(arm + "_hand"), to="xyzw"
+                )
 
             state["robot_ob"] = np.concatenate(
                 [x.ravel() for _, x in robot_states.items()]
@@ -187,79 +173,71 @@ class FurnitureBaxterEnv(FurnitureEnv):
         """
         super()._get_reference()
 
-        self.l_finger_geom_ids = [
-            [
+        self.l_finger_geom_ids = {
+            "left": [
                 self.sim.model.geom_name2id(x)
-                for x in self.gripper_left.left_finger_geoms
+                for x in self.gripper["left"].left_finger_geoms
             ],
-            [
+            "right": [
                 self.sim.model.geom_name2id(x)
-                for x in self.gripper_right.left_finger_geoms
+                for x in self.gripper["right"].left_finger_geoms
             ],
-        ]
-        self.r_finger_geom_ids = [
-            [
+        }
+        self.r_finger_geom_ids = {
+            "left": [
                 self.sim.model.geom_name2id(x)
-                for x in self.gripper_left.right_finger_geoms
+                for x in self.gripper["left"].right_finger_geoms
             ],
-            [
+            "right": [
                 self.sim.model.geom_name2id(x)
-                for x in self.gripper_right.right_finger_geoms
+                for x in self.gripper["right"].right_finger_geoms
             ],
-        ]
+        }
 
         # indices for joints in qpos, qvel
         self.robot_joints = list(self.mujoco_robot.joints)
-        self._ref_joint_pos_indexes = [
+        self._ref_joint_pos_indexes_all = [
             self.sim.model.get_joint_qpos_addr(x) for x in self.robot_joints
         ]
-        self._ref_joint_vel_indexes = [
+        self._ref_joint_vel_indexes_all = [
             self.sim.model.get_joint_qvel_addr(x) for x in self.robot_joints
         ]
+        pos_len = len(self._ref_joint_pos_indexes_all)
+        vel_len = len(self._ref_joint_vel_indexes_all)
+        self._ref_joint_pos_indexes = {
+            "right": self._ref_joint_pos_indexes_all[: pos_len // 2],
+            "left": self._ref_joint_pos_indexes_all[pos_len // 2 :],
+        }
+        self._ref_joint_vel_indexes = {
+            "right": self._ref_joint_vel_indexes_all[: vel_len // 2],
+            "left": self._ref_joint_vel_indexes_all[vel_len // 2 :],
+        }
 
         # indices for grippers in qpos, qvel
-        self.gripper_left_joints = list(self.gripper_left.joints)
-        self._ref_gripper_left_joint_pos_indexes = [
-            self.sim.model.get_joint_qpos_addr(x) for x in self.gripper_left_joints
-        ]
-        self._ref_gripper_left_joint_vel_indexes = [
-            self.sim.model.get_joint_qvel_addr(x) for x in self.gripper_left_joints
-        ]
-        self.left_eef_site_id = self.sim.model.site_name2id("l_g_grip_site")
+        gripper_left_joints = list(self.gripper["left"].joints)
+        gripper_right_joints = list(self.gripper["right"].joints)
+        self._ref_gripper_joint_pos_indexes = {
+            "left": [
+                self.sim.model.get_joint_qpos_addr(x) for x in gripper_left_joints
+            ],
+            "right": [
+                self.sim.model.get_joint_qpos_addr(x) for x in gripper_right_joints
+            ],
+        }
+        self._ref_gripper_joint_vel_indexes = {
+            "left": [
+                self.sim.model.get_joint_qvel_addr(x) for x in gripper_left_joints
+            ],
+            "right": [
+                self.sim.model.get_joint_qvel_addr(x) for x in gripper_right_joints
+            ],
+        }
 
-        self.gripper_right_joints = list(self.gripper_right.joints)
-        self._ref_gripper_right_joint_pos_indexes = [
-            self.sim.model.get_joint_qpos_addr(x) for x in self.gripper_right_joints
-        ]
-        self._ref_gripper_right_joint_vel_indexes = [
-            self.sim.model.get_joint_qvel_addr(x) for x in self.gripper_right_joints
-        ]
-        self.right_eef_site_id = self.sim.model.site_name2id("grip_site")
-
-        # indices for joint pos actuation, joint vel actuation, gripper actuation
-        self._ref_joint_pos_actuator_indexes = [
-            self.sim.model.actuator_name2id(actuator)
-            for actuator in self.sim.model.actuator_names
-            if actuator.startswith("pos")
-        ]
-
-        self._ref_joint_vel_actuator_indexes = [
-            self.sim.model.actuator_name2id(actuator)
-            for actuator in self.sim.model.actuator_names
-            if actuator.startswith("vel")
-        ]
-
-        self._ref_joint_gripper_left_actuator_indexes = [
-            self.sim.model.actuator_name2id(actuator)
-            for actuator in self.sim.model.actuator_names
-            if actuator.startswith("gripper_l")
-        ]
-
-        self._ref_joint_gripper_right_actuator_indexes = [
-            self.sim.model.actuator_name2id(actuator)
-            for actuator in self.sim.model.actuator_names
-            if actuator.startswith("gripper_r")
-        ]
+        # IDs of sites for gripper visualization
+        self.eef_site_id = {
+            "left": self.sim.model.site_name2id("l_g_grip_site"),
+            "right": self.sim.model.site_name2id("grip_site"),
+        }
 
     def _compute_reward(self):
         """
@@ -272,11 +250,24 @@ def main():
     from config import create_parser
 
     parser = create_parser(env="FurnitureBaxterEnv")
+    parser.set_defaults(max_episode_steps=2000)
+
+    # settings for VR demos
+    parser.set_defaults(alignment_pos_dist=0.15)
+    parser.set_defaults(alignment_rot_dist_up=0.8)
+    parser.set_defaults(alignment_rot_dist_forward=0.8)
+    parser.set_defaults(alignment_project_dist=0.2)
+    parser.set_defaults(control_type="ik_quaternion")
+    parser.set_defaults(move_speed=0.05)
     config, unparsed = parser.parse_known_args()
 
     # create an environment and run manual control of Baxter environment
     env = FurnitureBaxterEnv(config)
-    env.run_manual(config)
+    if config.load_demo:
+        env.run_demo(config)
+    else:
+        env.run_vr(config)
+        # env.run_manual(config)
 
 
 if __name__ == "__main__":

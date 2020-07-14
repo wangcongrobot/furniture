@@ -4,13 +4,14 @@ import logging
 import os
 import pickle
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from sys import platform
 
 import numpy as np
 import gym.spaces
 from pyquaternion import Quaternion
 from scipy.interpolate import interp1d
+import hjson
 
 import env.transform_utils as T
 from env.base import EnvMeta
@@ -25,16 +26,27 @@ from env.models import (
 from env.models.grippers import gripper_factory
 from env.models.objects import MujocoXMLObject
 from env.unity_interface import UnityInterface
+from env.controllers.arm_controller import *
 from util.demo_recorder import DemoRecorder
-from util.logger import logger
 from util.video_recorder import VideoRecorder
+from util.logger import logger
 
 try:
     import mujoco_py
 except ImportError as e:
     raise Exception("{}. (need to install mujoco_py)".format(e))
 
+
 np.set_printoptions(suppress=True)
+
+
+NEW_CONTROLLERS = [
+    "position",
+    "position_orientation",
+    "joint_impedance",
+    "joint_torque",
+    "joint_velocity",
+]
 
 
 class FurnitureEnv(metaclass=EnvMeta):
@@ -53,16 +65,18 @@ class FurnitureEnv(metaclass=EnvMeta):
         self._env_config = {
             "max_episode_steps": config.max_episode_steps,
             "success_reward": 100,
+            "touch_reward": 1,
+            "pick_reward": 1,
             "ctrl_reward": 1e-3,
             "furn_xyz_rand": config.furn_xyz_rand,
             "agent_xyz_rand": config.agent_xyz_rand,
             "furn_size_rand": config.furn_size_rand,
             "unstable_penalty": 100,
             "boundary": 1.5,  # XYZ cube boundary
-            "pos_dist": 0.1,
-            "rot_dist_up": 0.9,
-            "rot_dist_forward": 0.9,
-            "project_dist": 0.3,
+            "pos_dist": config.alignment_pos_dist,
+            "rot_dist_up": config.alignment_rot_dist_up,
+            "rot_dist_forward": config.alignment_rot_dist_forward,
+            "project_dist": config.alignment_project_dist,
         }
 
         self._debug = config.debug
@@ -80,13 +94,28 @@ class FurnitureEnv(metaclass=EnvMeta):
         self._screen_width = config.screen_width
         self._screen_height = config.screen_height
 
-        self._agent_type = config.agent_type  # ['baxter', 'sawyer', 'cursor']
-        self._control_type = config.control_type  # ['ik', 'impedance']
+        self._agent_type = config.agent_type
+        self._control_type = config.control_type
         self._control_freq = config.control_freq  # reduce freq -> longer timestep
         self._rescale_actions = config.rescale_actions
 
+        if self._agent_type == "Baxter":
+            self._arms = ["right", "left"]
+        else:
+            self._arms = ["right"]
+
+        if self._control_type in NEW_CONTROLLERS:
+            self._load_controller(
+                config.control_type,
+                os.path.join(
+                    os.path.dirname(__file__), "controllers/controller_config.hjson"
+                ),
+                {},
+            )
+
         self._robot_ob = config.robot_ob
         self._object_ob = config.object_ob
+        self._object_ob_all = config.object_ob_all
         self._visual_ob = config.visual_ob
         self._subtask_ob = config.subtask_ob
         self._segmentation_ob = config.segmentation_ob
@@ -98,8 +127,6 @@ class FurnitureEnv(metaclass=EnvMeta):
         self._background = None
         self._pos_init = None
         self._quat_init = None
-        self._record_vid = config.record_vid
-        self._record_demo = config.record_demo
 
         self._manual_resize = None
         self._action_on = False
@@ -111,9 +138,26 @@ class FurnitureEnv(metaclass=EnvMeta):
                 demo = pickle.load(f)
                 self._init_qpos = demo["qpos"][0]
 
+        if config.furniture_name:
+            furniture_name = config.furniture_name
+            config.furniture_id = furniture_name2id[config.furniture_name]
+        else:
+            furniture_name = furniture_names[config.furniture_id]
+        self.file_prefix = self._agent_type + "_" + furniture_name + "_"
+
         self._record_demo = config.record_demo
         if self._record_demo:
             self._demo = DemoRecorder(config.demo_dir)
+
+        self._record_vid = config.record_vid
+        self.vid_rec = None
+        if self._record_vid:
+            if self._record_demo:
+                self.vid_rec = VideoRecorder(
+                    prefix=self.file_prefix, demo_dir=config.demo_dir
+                )
+            else:
+                self.vid_rec = VideoRecorder(prefix=self.file_prefix)
 
         self._num_connect_steps = 0
         self._gravity_compensation = 0
@@ -123,7 +167,10 @@ class FurnitureEnv(metaclass=EnvMeta):
 
         self._preassembled = config.preassembled
 
-        if self._agent_type != "Cursor" and self._control_type == "ik":
+        if self._agent_type != "Cursor" and self._control_type in [
+            "ik",
+            "ik_quaternion",
+        ]:
             self._min_gripper_pos = np.array([-1.5, -1.5, 0.0])
             self._max_gripper_pos = np.array([1.5, 1.5, 1.5])
             self._action_repeat = 5
@@ -137,22 +184,18 @@ class FurnitureEnv(metaclass=EnvMeta):
             # set to the best quality
             self._unity.set_quality(config.quality)
 
-        self.vid_rec = None
-        self.file_prefix = (
-            self._agent_type + "_" + furniture_names[config.furniture_id] + "_"
-        )
-        if self._record_vid:
-            if self._record_demo:
-                self.vid_rec = VideoRecorder(
-                    prefix=self.file_prefix, demo_dir=config.demo_dir
-                )
-            else:
-                self.vid_rec = VideoRecorder(prefix=self.file_prefix)
-
         if config.render and platform == "win32":
             from mujoco_py import GlfwContext
 
-            GlfwContext(offscreen=True)  # Create a window to init GLFW.print(1)
+            GlfwContext(offscreen=True)  # create a window to init GLFW
+
+        if self._object_ob_all:
+            if config.furniture_name is not None:
+                self._furniture_id = furniture_name2id[config.furniture_name]
+            else:
+                self._furniture_id = config.furniture_id
+            self._load_model_object()
+            self._furniture_id = None
 
     @property
     def observation_space(self):
@@ -170,9 +213,14 @@ class FurnitureEnv(metaclass=EnvMeta):
 
         if self._object_ob:
             # can be changed to the desired number depending on the task
-            ob_space["object_ob"] = gym.spaces.Box(
-                low=-np.inf, high=np.inf, shape=((3 + 4) * 2,),
-            )
+            if self._object_ob_all:
+                ob_space["object_ob"] = gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=((3 + 4) * self.n_objects,),
+                )
+            else:
+                ob_space["object_ob"] = gym.spaces.Box(
+                    low=-np.inf, high=np.inf, shape=((3 + 4) * 2,),
+                )
 
         if self._subtask_ob:
             ob_space["subtask_ob"] = gym.spaces.Box(low=0.0, high=np.inf, shape=(2,),)
@@ -315,15 +363,11 @@ class FurnitureEnv(metaclass=EnvMeta):
             self._step_discrete(a.copy())
             self._do_simulation(None)
 
-        elif self._control_type == "ik":
+        elif self._control_type in ["ik", "ik_quaternion", "torque", "impedance"]:
             self._step_continuous(a.copy())
 
-        elif self._control_type == "torque":
+        elif self._control_type in NEW_CONTROLLERS:
             self._step_continuous(a.copy())
-
-        elif self._control_type == "impedance":
-            a = self._setup_action(a.copy())
-            self._do_simulation(a)
 
         else:
             raise ValueError
@@ -378,6 +422,7 @@ class FurnitureEnv(metaclass=EnvMeta):
             step_log["episode_length"] = self._episode_length
             step_log["episode_time"] = total_time
             step_log["episode_unstable"] = penalty
+            step_log["episode_num_connected"] = self._num_connected
 
         return self._terminal, step_log, penalty
 
@@ -385,10 +430,57 @@ class FurnitureEnv(metaclass=EnvMeta):
         """
         Computes the reward at the current step
         """
-        reward = self._env_config["success_reward"] * self._num_connected
+        # Touch & pick reward
+        touch_reward = 0
+        pick_reward = 0
+        floor_geom_id = self.sim.model.geom_name2id("FLOOR")
+        touch_floor = {}
+        for arm in self._arms:
+            touch_left_finger = {}
+            touch_right_finger = {}
+            for body_id in self._object_body_ids:
+                touch_left_finger[body_id] = False
+                touch_right_finger[body_id] = False
+                touch_floor[body_id] = False
+
+            for j in range(self.sim.data.ncon):
+                c = self.sim.data.contact[j]
+                body1 = self.sim.model.geom_bodyid[c.geom1]
+                body2 = self.sim.model.geom_bodyid[c.geom2]
+
+                for geom_id, body_id in [(c.geom1, body2), (c.geom2, body1)]:
+                    if not (body_id in self._object_body_ids):
+                        continue
+                    if geom_id in self.l_finger_geom_ids[arm]:
+                        touch_left_finger[body_id] = True
+                    if geom_id in self.r_finger_geom_ids[arm]:
+                        touch_right_finger[body_id] = True
+                    if geom_id == floor_geom_id:
+                        touch_floor[body_id] = True
+
+            for body_id in self._object_body_ids:
+                if touch_left_finger[body_id] and touch_right_finger[body_id]:
+                    if not self._touched[body_id]:
+                        self._touched[body_id] = True
+                        touch_reward += self._env_config["touch_reward"]
+                    if not self._picked[body_id]:
+                        self._picked[body_id] = True
+                        pick_reward += self._env_config["pick_reward"]
+
+        # Success reward
+        success_reward = self._env_config["success_reward"] * (
+            self._num_connected - self._prev_num_connected
+        )
+        self._prev_num_connected = self._num_connected
+
+        reward = success_reward + touch_reward + pick_reward
         # do not terminate
         done = False
-        info = {}
+        info = {
+            "success_reward": success_reward,
+            "touch_reward": touch_reward,
+            "pick_reward": pick_reward,
+        }
         return reward, done, info
 
     def _ctrl_reward(self, a):
@@ -915,10 +1007,10 @@ class FurnitureEnv(metaclass=EnvMeta):
         project2_1 = np.dot(up2, T.unit_vector(site1_xpos[:3] - site2_xpos[:3]))
 
         logger.debug(
-            f"pos_dist: {pos_dist}"
-            + f"rot_dist_up: {rot_dist_up}"
-            + f"rot_dist_forward: {rot_dist_forward}"
-            + f"project: {project1_2}, {project2_1}"
+            f"pos_dist: {pos_dist}  "
+            + f"rot_dist_up: {rot_dist_up}  "
+            + f"rot_dist_forward: {rot_dist_forward}  "
+            + f"project: {project1_2}, {project2_1}  "
         )
 
         max_rot_dist_forward = rot_dist_forward
@@ -1053,102 +1145,21 @@ class FurnitureEnv(metaclass=EnvMeta):
         Step function for continuous control, like Sawyer and Baxter
         """
         connect = action[-1]
-        if self._control_type == "ik":
-            for qvel_addr in self._ref_joint_vel_indexes:
-                self.sim.data.qvel[qvel_addr] = 0.0
-            self.sim.forward()
-
-            if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
-                action[:3] = action[:3] * self._move_speed
-                action[:3] = [-action[1], action[0], action[2]]
-                gripper_pos = self.sim.data.get_body_xpos("right_hand")
-                d_pos = self._bounded_d_pos(action[:3], gripper_pos)
-                self._initial_right_hand_quat = T.euler_to_quat(
-                    action[3:6] * self._rotate_speed, self._initial_right_hand_quat
-                )
-                d_quat = T.quat_multiply(
-                    T.quat_inverse(self._right_hand_quat), self._initial_right_hand_quat
-                )
-                gripper_dis = action[-2]
-                action = np.concatenate([d_pos, d_quat, [gripper_dis]])
-
-            elif self._agent_type == "Baxter":
-                action[:3] = action[:3] * self._move_speed
-                action[:3] = [-action[1], action[0], action[2]]
-                action[6:9] = action[6:9] * self._move_speed
-                action[6:9] = [-action[7], action[6], action[8]]
-                right_gripper_pos = self.sim.data.get_body_xpos("right_hand")
-                right_d_pos = self._bounded_d_pos(action[:3], right_gripper_pos)
-                self._initial_right_hand_quat = T.euler_to_quat(
-                    action[3:6] * self._rotate_speed, self._initial_right_hand_quat
-                )
-                right_d_quat = T.quat_multiply(
-                    T.quat_inverse(self._right_hand_quat), self._initial_right_hand_quat
-                )
-
-                right_gripper_dis = action[-3]
-                left_gripper_pos = self.sim.data.get_body_xpos("left_hand")
-                left_d_pos = self._bounded_d_pos(action[6:9], left_gripper_pos)
-                self._initial_left_hand_quat = T.euler_to_quat(
-                    action[9:12] * self._rotate_speed, self._initial_left_hand_quat
-                )
-                left_d_quat = T.quat_multiply(
-                    T.quat_inverse(self._left_hand_quat), self._initial_left_hand_quat
-                )
-                left_gripper_dis = action[-2]
-                action = np.concatenate(
-                    [
-                        right_d_pos,
-                        right_d_quat,
-                        left_d_pos,
-                        left_d_quat,
-                        [right_gripper_dis, left_gripper_dis],
-                    ]
-                )
-
-            input_1 = self._make_input(action[:7], self._right_hand_quat)
-            if self._agent_type in ["Sawyer", "Panda"]:
-                velocities = self._controller.get_control(**input_1)
-                low_action = np.concatenate([velocities, action[7:8]])
-            elif self._agent_type == "Jaco":
-                velocities = self._controller.get_control(**input_1)
-                low_action = np.concatenate([velocities] + [action[7:]] * 3)
-            elif self._agent_type == "HDT":
-                velocities = self._controller.get_control(**input_1)
-                low_action = np.concatenate([velocities] + [action[7:]] * 3)                
-            elif self._agent_type == "Baxter":
-                input_2 = self._make_input(action[7:14], self._left_hand_quat)
-                velocities = self._controller.get_control(input_1, input_2)
-                low_action = np.concatenate([velocities, action[14:16]])
-            else:
-                raise Exception(
-                    "Only Sawyer, Panda, Jaco, HDT, Baxter robot environments are supported for IK "
-                    "control currently."
-                )
-
-            # keep trying to reach the target in a closed-loop
-            ctrl = self._setup_action(low_action)
-            for i in range(self._action_repeat):
-                self._do_simulation(ctrl)
-
-                if i + 1 < self._action_repeat:
-                    velocities = self._controller.get_control()
-                    if self._agent_type in ["Sawyer", "Panda"]:
-                        low_action = np.concatenate([velocities, action[7:]])
-                    elif self._agent_type == "Jaco":
-                        low_action = np.concatenate([velocities] + [action[7:]] * 3)
-                    elif self._agent_type == "HDT":
-                        low_action = np.concatenate([velocities] + [action[7:]] * 3)
-                    elif self._agent_type == "Baxter":
-                        low_action = np.concatenate([velocities, action[14:]])
-                    ctrl = self._setup_action(low_action)
+        if self._control_type in ["ik", "ik_quaternion"]:
+            self._do_ik_step(action)
 
         elif self._control_type == "torque":
             self._do_simulation(action)
 
+        elif self._control_type == "impedance":
+            a = self._setup_action(action)
+            self._do_simulation(a)
+
+        elif self._control_type in NEW_CONTROLLERS:
+            self._do_controller_step(action)
+
         if connect > 0:
-            num_hands = 2 if self._agent_type == "Baxter" else 1
-            for i in range(num_hands):
+            for arm in self._arms:
                 touch_left_finger = {}
                 touch_right_finger = {}
                 for body_id in self._object_body_ids:
@@ -1160,24 +1171,24 @@ class FurnitureEnv(metaclass=EnvMeta):
                     body1 = self.sim.model.geom_bodyid[c.geom1]
                     body2 = self.sim.model.geom_bodyid[c.geom2]
                     if (
-                        c.geom1 in self.l_finger_geom_ids[i]
+                        c.geom1 in self.l_finger_geom_ids[arm]
                         and body2 in self._object_body_ids
                     ):
                         touch_left_finger[body2] = True
                     if (
                         body1 in self._object_body_ids
-                        and c.geom2 in self.l_finger_geom_ids[i]
+                        and c.geom2 in self.l_finger_geom_ids[arm]
                     ):
                         touch_left_finger[body1] = True
 
                     if (
-                        c.geom1 in self.r_finger_geom_ids[i]
+                        c.geom1 in self.r_finger_geom_ids[arm]
                         and body2 in self._object_body_ids
                     ):
                         touch_right_finger[body2] = True
                     if (
                         body1 in self._object_body_ids
-                        and c.geom2 in self.r_finger_geom_ids[i]
+                        and c.geom2 in self.r_finger_geom_ids[arm]
                     ):
                         touch_right_finger[body1] = True
 
@@ -1222,13 +1233,16 @@ class FurnitureEnv(metaclass=EnvMeta):
         if self._object_ob:
             obj_states = OrderedDict()
             for i, obj_name in enumerate(self._object_names):
-                if i in [self._subtask_part1, self._subtask_part2]:
+                if self._object_ob_all or i in [
+                    self._subtask_part1,
+                    self._subtask_part2,
+                ]:
                     obj_pos = self._get_pos(obj_name)
                     obj_quat = self._get_quat(obj_name)
                     obj_states["{}_pos".format(obj_name)] = obj_pos
                     obj_states["{}_quat".format(obj_name)] = obj_quat
 
-            if self._subtask_part1 == -1:
+            if not self._object_ob_all and self._subtask_part1 == -1:
                 obj_states["dummy"] = np.zeros(14)
 
             state["object_ob"] = np.concatenate(
@@ -1269,22 +1283,24 @@ class FurnitureEnv(metaclass=EnvMeta):
                 and "r_gripper" not in given_qpos
                 and "qpos" in given_qpos
             ):
-                self.sim.data.qpos[self._ref_joint_pos_indexes] = given_qpos["qpos"]
-                self.sim.data.qpos[self._ref_gripper_joint_pos_indexes] = given_qpos[
-                    "l_gripper"
+                self.sim.data.qpos[self._ref_joint_pos_indexes["right"]] = given_qpos[
+                    "qpos"
                 ]
+                self.sim.data.qpos[
+                    self._ref_gripper_joint_pos_indexes["right"]
+                ] = given_qpos["l_gripper"]
         elif self._agent_type == "Baxter":
             if (
                 "l_gripper" in given_qpos
                 and "r_gripper" in given_qpos
                 and "qpos" in given_qpos
             ):
-                self.sim.data.qpos[self._ref_joint_pos_indexes] = given_qpos["qpos"]
+                self.sim.data.qpos[self._ref_joint_pos_indexes_all] = given_qpos["qpos"]
                 self.sim.data.qpos[
-                    self._ref_gripper_right_joint_pos_indexes
+                    self._ref_gripper_joint_pos_indexes["right"]
                 ] = given_qpos["r_gripper"]
                 self.sim.data.qpos[
-                    self._ref_gripper_left_joint_pos_indexes
+                    self._ref_gripper_joint_pos_indexes["left"]
                 ] = given_qpos["l_gripper"]
         elif self._agent_type == "Cursor":
             if "cursor0" in given_qpos and "cursor1" in given_qpos:
@@ -1299,9 +1315,11 @@ class FurnitureEnv(metaclass=EnvMeta):
         """
         if self._config.furniture_name == "Random":
             furniture_id = self._rng.randint(len(furniture_xmls))
-        if self._furniture_id is None or (
-            self._furniture_id != furniture_id and furniture_id is not None) or (
-            self._manual_resize is not None):
+        if (
+            self._furniture_id is None
+            or (self._furniture_id != furniture_id and furniture_id is not None)
+            or (self._manual_resize is not None)
+        ):
             # construct mujoco xml for furniture_id
             if furniture_id is None:
                 self._furniture_id = self._config.furniture_id
@@ -1355,8 +1373,15 @@ class FurnitureEnv(metaclass=EnvMeta):
         self._connected_body1_pos = None
         self._connected_body1_quat = None
         self._num_connected = 0
+        self._prev_num_connected = 0
         if self._agent_type == "Cursor":
             self._cursor_selected = [None, None]
+
+        self._touched = {}
+        self._picked = {}
+        for body_id in self._object_body_ids:
+            self._touched[body_id] = False
+            self._picked[body_id] = False
 
         # initialize weld constraints
         eq_obj1id = self.sim.model.eq_obj1id
@@ -1462,9 +1487,10 @@ class FurnitureEnv(metaclass=EnvMeta):
             for _ in range(500):
                 # gravity compensation
                 if self._agent_type != "Cursor":
-                    self.sim.data.qfrc_applied[
-                        self._ref_joint_vel_indexes
-                    ] = self.sim.data.qfrc_bias[self._ref_joint_vel_indexes]
+                    for arm in self._arms:
+                        self.sim.data.qfrc_applied[
+                            self._ref_joint_vel_indexes[arm]
+                        ] = self.sim.data.qfrc_bias[self._ref_joint_vel_indexes[arm]]
 
                 # set initial pose of an agent
                 self._initialize_robot_pos()
@@ -1481,7 +1507,7 @@ class FurnitureEnv(metaclass=EnvMeta):
             if self._agent_type == "Baxter":
                 self._initial_left_hand_quat = self._left_hand_quat
 
-            if self._control_type == "ik":
+            if self._control_type in ["ik", "ik_quaternion"]:
                 # set up ik controller
                 self._controller.sync_state()
 
@@ -1498,29 +1524,121 @@ class FurnitureEnv(metaclass=EnvMeta):
                 self._background = background
                 self._unity.set_background(background)
 
+    def _load_controller(self, controller_type, controller_file, kwargs):
+        """
+        Loads controller to be used for dynamic trajectories
+        Controller_type is a specified controller, and controller_params is a config file containing the appropriate
+        parameters for that controller
+        Kwargs is kwargs passed from init call and represents individual params to override in controller config file
+        """
+
+        # Load the controller config file
+        try:
+            with open(controller_file) as f:
+                params = hjson.load(f)
+        except FileNotFoundError:
+            print(
+                "Controller config file '{}' not found. Please check filepath and try again.".format(
+                    controller_file
+                )
+            )
+
+        controller_params = params[controller_type]
+
+        # Load additional arguments from kwargs and override the prior config-file loaded ones
+        for key, value in kwargs.items():
+            if key in controller_params:
+                controller_params[key] = value
+
+        self.controller = {}
+        for arm in self._arms:
+            if controller_type == ControllerType.POS:
+                self.controller[arm] = PositionController(**controller_params)
+            elif controller_type == ControllerType.POS_ORI:
+                self.controller[arm] = PositionOrientationController(
+                    **controller_params
+                )
+            elif controller_type == ControllerType.JOINT_IMP:
+                self.controller[arm] = JointImpedanceController(**controller_params)
+            elif controller_type == ControllerType.JOINT_TORQUE:
+                self.controller[arm] = JointTorqueController(**controller_params)
+            else:
+                self.controller[arm] = JointVelocityController(**controller_params)
+
+    def _pre_action(self, action, policy_step):
+        """
+        Overrides the superclass method to actuate the robot with the
+        passed joint velocities and gripper control.
+        Args:
+            action (numpy array): The control to apply to the robot. The first
+                @self.mujoco_robot.dof dimensions should be the desired
+                normalized joint velocities and if the robot has
+                a gripper, the next @self.gripper.dof dimensions should be
+                actuation controls for the gripper.
+        """
+
+        if self._control_type not in NEW_CONTROLLERS:
+            return
+
+        def apply_rescaled_action(indexes, input_action):
+            ctrl_range = self.sim.model.actuator_ctrlrange[indexes]
+            bias = 0.5 * (ctrl_range[:, 1] + ctrl_range[:, 0])
+            weight = 0.5 * (ctrl_range[:, 1] - ctrl_range[:, 0])
+            applied_action = bias + weight * input_action
+            self.sim.data.ctrl[indexes] = applied_action
+
+        # Split action into joint control and peripheral (i.e.: gripper) control (as specified by individual gripper)
+        # Gripper action
+        last = 0
+        for arm in self._arms:
+            last += self.controller[arm].control_dim
+        for arm in self._arms:
+            gripper_action_in = action[last : last + self.gripper[arm].dof]
+            last = last + self.gripper[arm].dof
+            gripper_action_actual = self.gripper[arm].format_action(gripper_action_in)
+            apply_rescaled_action(
+                self._ref_gripper_joint_vel_indexes[arm], gripper_action_actual
+            )
+
+        # Arm action
+        last = 0
+        for arm in self._arms:
+            arm_action = action[last : last + self.controller[arm].control_dim]
+            last += self.controller[arm].control_dim
+            # First, get joint space action
+            self.controller[arm].update_model(
+                self.sim,
+                id_name=arm + "_hand",
+                joint_index=self._ref_joint_pos_indexes[arm],
+            )
+            torques = self.controller[arm].action_to_torques(
+                arm_action, policy_step
+            )  # this scales and clips the actions correctly
+
+            # Now, control both gripper and joints
+            self.sim.data.ctrl[self._ref_joint_vel_indexes[arm]] = (
+                self.sim.data.qfrc_bias[self._ref_joint_vel_indexes[arm]] + torques
+            )
+            print(
+                "force: ",
+                self.sim.data.qfrc_bias[self._ref_joint_vel_indexes[arm]] + torques,
+            )
+
     def _initialize_robot_pos(self):
         """
         Initializes robot posision with random noise perturbation
         """
         noise = self._init_random(self.mujoco_robot.init_qpos.shape, "agent")
-        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
-            self.sim.data.qpos[self._ref_joint_pos_indexes] = (
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT", "Baxter"]:
+            self.sim.data.qpos[self._ref_joint_pos_indexes_all] = (
                 self.mujoco_robot.init_qpos + noise
             )
-            self.sim.data.qpos[
-                self._ref_gripper_joint_pos_indexes
-            ] = self.gripper.init_qpos  # open
-
-        elif self._agent_type == "Baxter":
-            self.sim.data.qpos[self._ref_joint_pos_indexes] = (
-                self.mujoco_robot.init_qpos + noise
-            )
-            self.sim.data.qpos[
-                self._ref_gripper_right_joint_pos_indexes
-            ] = self.gripper_right.init_qpos
-            self.sim.data.qpos[
-                self._ref_gripper_left_joint_pos_indexes
-            ] = self.gripper_left.init_qpos
+            for arm in self._arms:
+                self.sim.data.qpos[
+                    self._ref_gripper_joint_pos_indexes[arm]
+                ] = self.gripper[
+                    arm
+                ].init_qpos  # open
 
         elif self._agent_type == "Cursor":
             self._set_pos("cursor0", [-0.2, 0.0, self._move_speed / 2])
@@ -1532,18 +1650,20 @@ class FurnitureEnv(metaclass=EnvMeta):
         """
         if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
             qpos = {
-                "qpos": self.sim.data.qpos[self._ref_joint_pos_indexes],
-                "l_gripper": self.sim.data.qpos[self._ref_gripper_joint_pos_indexes],
+                "qpos": self.sim.data.qpos[self._ref_joint_pos_indexes["right"]],
+                "l_gripper": self.sim.data.qpos[
+                    self._ref_gripper_joint_pos_indexes["right"]
+                ],
             }
         elif self._agent_type == "Baxter":
             qpos = {
                 "r_gripper": self.sim.data.qpos[
-                    self._ref_gripper_right_joint_pos_indexes
+                    self._ref_gripper_joint_pos_indexes["right"]
                 ],
                 "l_gripper": self.sim.data.qpos[
-                    self._ref_gripper_left_joint_pos_indexes
+                    self._ref_gripper_joint_pos_indexes["left"]
                 ],
-                "qpos": self.sim.data.qpos[self._ref_joint_pos_indexes],
+                "qpos": self.sim.data.qpos[self._ref_joint_pos_indexes_all],
             }
         elif self._agent_type == "Cursor":
             qpos = {
@@ -1600,7 +1720,10 @@ class FurnitureEnv(metaclass=EnvMeta):
         self.sim.forward()
 
         # setup mocap for ik control
-        if self._control_type == "ik" and self._agent_type != "Cursor":
+        if (
+            self._control_type in ["ik", "ik_quaternion"]
+            and self._agent_type != "Cursor"
+        ):
             import env.models
 
             if self._agent_type == "Sawyer":
@@ -1620,19 +1743,22 @@ class FurnitureEnv(metaclass=EnvMeta):
                 bullet_data_path=os.path.join(env.models.assets_root, "bullet_data"),
                 robot_jpos_getter=self._robot_jpos_getter,
             )
+        elif self._control_type in NEW_CONTROLLERS:
+            for arm in self._arms:
+                self.controller[arm].reset()
 
     def _load_model_robot(self):
         """
         Loads sawyer, baxter, or cursor
         """
-        use_torque = self._control_type == "torque"
+        use_torque = self._control_type in ["torque"] + NEW_CONTROLLERS
         if self._agent_type == "Sawyer":
             from env.models.robots import Sawyer
 
             self.mujoco_robot = Sawyer(use_torque=use_torque)
-            self.gripper = gripper_factory("TwoFingerGripper")
-            self.gripper.hide_visualization()
-            self.mujoco_robot.add_gripper("right_hand", self.gripper)
+            self.gripper = {"right": gripper_factory("TwoFingerGripper")}
+            self.gripper["right"].hide_visualization()
+            self.mujoco_robot.add_gripper("right_hand", self.gripper["right"])
             self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
             self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
 
@@ -1640,9 +1766,9 @@ class FurnitureEnv(metaclass=EnvMeta):
             from env.models.robots import Panda
 
             self.mujoco_robot = Panda(use_torque=use_torque)
-            self.gripper = gripper_factory("PandaGripper")
-            self.gripper.hide_visualization()
-            self.mujoco_robot.add_gripper("right_hand", self.gripper)
+            self.gripper = {"right": gripper_factory("PandaGripper")}
+            self.gripper["right"].hide_visualization()
+            self.mujoco_robot.add_gripper("right_hand", self.gripper["right"])
             self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
             self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
 
@@ -1650,9 +1776,9 @@ class FurnitureEnv(metaclass=EnvMeta):
             from env.models.robots import Jaco
 
             self.mujoco_robot = Jaco(use_torque=use_torque)
-            self.gripper = gripper_factory("JacoGripper")
-            self.gripper.hide_visualization()
-            self.mujoco_robot.add_gripper("right_hand", self.gripper)
+            self.gripper = {"right": gripper_factory("JacoGripper")}
+            self.gripper["right"].hide_visualization()
+            self.mujoco_robot.add_gripper("right_hand", self.gripper["right"])
             self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
             self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
 
@@ -1670,12 +1796,14 @@ class FurnitureEnv(metaclass=EnvMeta):
             from env.models.robots import Baxter
 
             self.mujoco_robot = Baxter(use_torque=use_torque)
-            self.gripper_right = gripper_factory("TwoFingerGripper")
-            self.gripper_left = gripper_factory("LeftTwoFingerGripper")
-            self.gripper_right.hide_visualization()
-            self.gripper_left.hide_visualization()
-            self.mujoco_robot.add_gripper("right_hand", self.gripper_right)
-            self.mujoco_robot.add_gripper("left_hand", self.gripper_left)
+            self.gripper = {
+                "right": gripper_factory("TwoFingerGripper"),
+                "left": gripper_factory("LeftTwoFingerGripper"),
+            }
+            self.gripper["right"].hide_visualization()
+            self.gripper["left"].hide_visualization()
+            self.mujoco_robot.add_gripper("right_hand", self.gripper["right"])
+            self.mujoco_robot.add_gripper("left_hand", self.gripper["left"])
             self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
             self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
 
@@ -1743,7 +1871,9 @@ class FurnitureEnv(metaclass=EnvMeta):
         # task includes arena, robot, and objects of interest
         from env.models.tasks import FloorTask
 
-        init_qpos = next(iter(self.mujoco_objects.values())).get_init_pos(list(self.mujoco_objects.keys()))
+        init_qpos = next(iter(self.mujoco_objects.values())).get_init_pos(
+            list(self.mujoco_objects.keys())
+        )
         self.mujoco_model = FloorTask(
             self.mujoco_arena,
             self.mujoco_robot,
@@ -1752,7 +1882,7 @@ class FurnitureEnv(metaclass=EnvMeta):
             self._config.furn_xyz_rand,
             self._config.furn_rot_rand,
             self._rng,
-            init_qpos
+            init_qpos,
         )
 
     def key_callback(self, window, key, scancode, action, mods):
@@ -1930,9 +2060,15 @@ class FurnitureEnv(metaclass=EnvMeta):
         if controller not in self.vr.devices:
             print("Lost track of ", controller)
             return None, None
-        pose = c.get_pose_euler()
+        # pose = c.get_pose_euler()
+        pose = c.get_pose_quaternion()
+        # match rotation in sim and vr controller
+        if self._control_type == "ik":
+            pose[3:] = T.euler_to_quat([0, 0, -90], pose[3:])
+        else:
+            pose[3:] = T.euler_to_quat([0, 0, 180], pose[3:])
         state = c.get_controller_inputs()
-        if pose is None or state is None:
+        if pose is None or state is None or np.linalg.norm(pose[:3]) < 0.001:
             print("Lost track of pose ", controller)
             return None, None
         return np.asarray(pose), state
@@ -1958,126 +2094,157 @@ class FurnitureEnv(metaclass=EnvMeta):
             self.render()
 
         # set initial pose of controller as origin
-        origin_1, _ = self.get_vr_input("controller_1")
-        origin_2 = None
-        if self._agent_type == "Baxter":
-            origin_2, _ = self.get_vr_input("controller_2")
+        origin_vr_pos = {}
+        origin_vr_quat = {}
+        origin_sim_pos = {}
+        origin_sim_quat = {}
+        flag = {}
 
-        cursor_idx = 0
-        flag = [-1, -1]
+        def init_origin():
+            for i, arm in enumerate(self._arms):
+                logger.warn("Initialize %s VR controller", arm)
+                while True:
+                    origin_pose, origin_state = self.get_vr_input(
+                        "controller_%d" % (i + 1)
+                    )
+                    if origin_pose is None or origin_state is None:
+                        time.sleep(0.1)
+                    else:
+                        break
+                origin_vr_pos[arm] = origin_pose[:3].copy()
+                origin_vr_quat[arm] = origin_pose[3:].copy()
+                origin_sim_pos[arm] = self.sim.data.get_body_xpos(
+                    "%s_hand" % arm
+                ).copy()
+                origin_sim_quat[arm] = self.sim.data.get_body_xquat(
+                    "%s_hand" % arm
+                ).copy()
+                flag[arm] = -1
+
+        def rel_pos(a, b):
+            return a - b
+
+        def rel_quat(a, b):
+            return np.array(list(Quaternion(a).inverse * Quaternion(b)))
+
+        def quat_to_rot(quat):
+            rot = np.array(
+                T.quaternion_to_euler(*T.convert_quat(np.array(quat), to="xyzw"))
+            )
+            # swap rotation axes
+            rot[1] = -rot[1]
+            rot[0], rot[2] = -rot[2], rot[0]
+
+            if abs(rot[0]) < 1:
+                rot[0] = 0
+            if abs(rot[1]) < 1:
+                rot[1] = 0
+            if abs(rot[2]) < 1:
+                rot[2] = 0
+            return rot
+
+        def get_action(pose, arm):
+            rel_vr_pos = rel_pos(origin_vr_pos[arm], pose[:3])
+            # relative movement speed between VR and simulation
+            rel_vr_pos *= 2.5
+            # swap y, z axes
+            rel_vr_pos[1], rel_vr_pos[2] = -rel_vr_pos[2], rel_vr_pos[1]
+            rel_vr_quat = rel_quat(origin_vr_quat[arm], pose[3:])  # wxyz
+
+            sim_pos = self.sim.data.get_body_xpos("%s_hand" % arm).copy()
+            sim_quat = self.sim.data.get_body_xquat("%s_hand" % arm).copy()  # wxyz
+            rel_sim_pos = rel_pos(origin_sim_pos[arm], sim_pos)
+            rel_sim_quat = rel_quat(origin_sim_quat[arm], sim_quat)  # wxyz
+
+            action_pos = rel_pos(rel_sim_pos, rel_vr_pos)
+            action_quat = rel_quat(rel_sim_quat, rel_vr_quat)  # wxyz
+            action_rot = quat_to_rot(action_quat)
+
+            if self._control_type == "ik":
+                return action_pos, action_rot
+            elif self._control_type == "ik_quaternion":
+                return action_pos, action_quat
+
         t = 0
+        connect = -1
+        init_origin()
         while True:
-            # get pose of the vr
-            p1, s1 = self.get_vr_input("controller_1")
-            if self._agent_type == "Baxter":
-                p2, s2 = self.get_vr_input("controller_2")
-
-            # check if controller is connected
-            if p1 is None or s1 is None:
-                time.sleep(0.1)
-                continue
-            if self._agent_type == "Baxter" and p2 is None or s2 is None:
-                time.sleep(0.1)
-                continue
-
-            d_p1 = p1 - origin_1
-            # clamp rotation
-            r1 = d_p1[-3:]
-            r1[np.abs(r1) < 0.0] = 0
-            d_p1[-3:] = r1
-            # remap xyz translation
-            d_p1[1], d_p1[2] = d_p1[2], d_p1[1]
-            d_p1[1] = -d_p1[1]
-            # remap xyz rotation
-            # wrist rotation is 3
-            d_p1[3] = d_p1[4]
-            if config.wrist_only:
-                d_p1[[4, 5]] = 0
-            origin_1 = p1
-
-            if self._agent_type == "Baxter":
-                d_p2 = p2 - origin_2
-                # clamp rotation
-                r2 = d_p2[-3:]
-                r2[np.abs(r2) < 0.0] = 0
-                d_p2[-3:] = r2
-                # remap xyz translation
-                d_p2[1], d_p2[2] = d_p2[2], d_p2[1]
-                d_p2[1] = -d_p2[1]
-                # remap xyz rotation
-                d_p2[3] = d_p2[4]
-                if config.wrist_only:
-                    d_p2[[4, 5]] = 0
-                origin_2 = p2
+            pose = {}
+            state = {}
+            action_pos = {}
+            action_rot = {}
+            for i, arm in enumerate(self._arms):
+                while True:
+                    # get pose of the vr
+                    pose[arm], state[arm] = self.get_vr_input("controller_%d" % (i + 1))
+                    # check if controller is connected
+                    if pose[arm] is None or state[arm] is None:
+                        time.sleep(0.1)
+                    else:
+                        break
+                action_pos[arm], action_rot[arm] = get_action(pose[arm], arm)
 
             if config.render:
                 self.render()
 
-            action = np.zeros((8,))
-            # action_2 = np.zeros((8,))
-
-            states = [s1, s2] if self._agent_type == "Baxter" else [s1]
             reset = False
-            for cursor_idx, s in enumerate(states):
+            connect = -1
+            for arm in self._arms:
+                s = state[arm]
                 # select
                 if s["trigger"] > 0.01:
-                    flag[cursor_idx] = 1
+                    flag[arm] = 1
                 else:
-                    flag[cursor_idx] = -1
+                    flag[arm] = -1
 
                 # connect
                 if s["trackpad_pressed"] != 0:
-                    action[7] = 1
+                    connect = 1
 
                 # reset
                 if s["grip_button"] != 0:
-                    t = 0
-                    flag = [-1, -1]
-                    self.reset(config.furniture_id, config.background)
                     reset = True
-                    break
 
             if reset:
+                t = 0
+                connect = -1
                 if self._record_demo:
                     self._demo.save(self.file_prefix)
+                self.reset(config.furniture_id, config.background)
+                init_origin()
                 continue
 
-            # action space is 7 dim per controller (3 xyz, 3 euler, 1 sel)
-            # and then one more dim for connect
-            if self._agent_type == "Cursor":
-                action = np.hstack(
-                    [
-                        d_p1[:6],
-                        [flag[0]],
-                        np.zeros_like(action[:6]),
-                        [flag[1], action[7]],
-                    ]
-                )
-            elif self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
-                action[:6] = d_p1[:6]
-                action = action[:8]
-                action[6] = flag[0]
-            elif self._agent_type == "Baxter":
-                d_p1[:3] *= 100
-                d_p2[:3] *= 100
-                d_p1[3] = 0
-                d_p2[3] = 0
-                action = np.hstack([d_p1[:6], d_p2[:6], [flag[0], flag[1], action[7]]])
-                print("*** R: " + str(d_p1[:6]) + "  L: " + str(d_p2[:6]))
+            action_items = []
+            for arm in self._arms:
+                action_items.append(action_pos[arm])
+                if self._control_type == "ik":
+                    action_items.append(action_rot[arm] / self._rotate_speed)
+                else:
+                    action_items.append(action_rot[arm])
+            for arm in self._arms:
+                action_items.append([flag[arm]])
+            action_items.append([connect])
 
-            print("Take action: " + str(action[:6]))
+            action = np.hstack(action_items)
+            action = np.clip(action, -1.0, 1.0)
+
+            print(str(t) + " Take action: " + str(action))
             ob, reward, done, info = self.step(action)
-            if config.debug:
-                print("\rAction: " + str(action[:6]), end="")
+
             if self._record_vid:
                 self.vid_rec.capture_frame(self.render("rgb_array")[0])
+            t += 1
             if done:
                 if self._record_demo:
                     self._demo.save(self.file_prefix)
                 self.reset(config.furniture_id, config.background)
                 if self._record_vid:
                     self.vid_rec.capture_frame(self.render("rgb_array")[0])
-            t += 1
+                t = 0
+                connect = -1
+                init_origin()
+
+            time.sleep(0.05)
 
     def run_manual(self, config):
         """
@@ -2187,7 +2354,7 @@ class FurnitureEnv(metaclass=EnvMeta):
                                 [flag[1], action[7]],
                             ]
                         )
-                elif self._control_type == "ik":
+                elif self._control_type in ["ik", "position_orientation"]:
                     if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
                         action = action[:8]
                         action[6] = flag[0]
@@ -2204,7 +2371,6 @@ class FurnitureEnv(metaclass=EnvMeta):
                 ob, reward, done, info = self.step(action)
                 logger.info(f"Action: {action}")
 
-
                 if self._record_vid:
                     self.vid_rec.capture_frame(self.render("rgb_array")[0])
                 else:
@@ -2219,7 +2385,9 @@ class FurnitureEnv(metaclass=EnvMeta):
                         if depth is not None:
                             depth = np.concatenate(depth)
 
-                    imageio.imwrite(config.furniture_name + ".png", (img * 255).astype(np.uint8))
+                    imageio.imwrite(
+                        config.furniture_name + ".png", (img * 255).astype(np.uint8)
+                    )
                     if self._segmentation_ob:
                         seg = self.render("segmentation")
                         if len(seg.shape) == 4:
@@ -2309,14 +2477,14 @@ class FurnitureEnv(metaclass=EnvMeta):
         grid = tensor(np.zeros((n_img, 3, self._screen_height, self._screen_width)))
         blended = np.zeros((3, self._screen_height, self._screen_width))
         for i in range(n_img):
-            grid[i] = (tensor(np.transpose((self.render("rgb_array")[0]), (2,0,1))))
+            grid[i] = tensor(np.transpose((self.render("rgb_array")[0]), (2, 0, 1)))
             blended += grid[i].numpy()
             self.reset(config.furniture_id, config.background)
 
         grid = make_grid(grid, nrow=4).numpy()
-        plt.imsave('grid' + str(n_img) +'.jpg', np.transpose(grid, (1,2,0)))
+        plt.imsave("grid" + str(n_img) + ".jpg", np.transpose(grid, (1, 2, 0)))
         blended = blended / n_img
-        plt.imsave('blended' + str(n_img) + '.jpg', np.transpose(blended, (1,2,0)))
+        plt.imsave("blended" + str(n_img) + ".jpg", np.transpose(blended, (1, 2, 0)))
 
     def _get_reference(self):
         """
@@ -2489,9 +2657,8 @@ class FurnitureEnv(metaclass=EnvMeta):
                         self._stop_object(obj_name, gravity=0)
 
             self.sim.forward()
-            for i in range(int(self._control_timestep / self._model_timestep)):
+            for _ in range(int(self._control_timestep / self._model_timestep)):
                 self.sim.step()
-                self._cur_time += self._model_timestep
 
             self._cur_time += self._control_timestep
 
@@ -2500,6 +2667,196 @@ class FurnitureEnv(metaclass=EnvMeta):
                 for obj_name in self._object_names:
                     if self._find_group(obj_name) in selected_idx:
                         self._stop_object(obj_name, gravity=1)
+
+        except Exception as e:
+            logger.warn(
+                "[!] Warning: Simulation is unstable. The episode is terminated."
+            )
+            logger.warn(e)
+            self.reset()
+            self._fail = True
+
+    def _do_ik_step(self, action):
+        """
+        Take multiple physics simulation steps, bounded by self._control_timestep
+        """
+        for arm in self._arms:
+            for qvel_addr in self._ref_joint_vel_indexes[arm]:
+                self.sim.data.qvel[qvel_addr] = 0.0
+        self.sim.forward()
+
+        if self._control_type == "ik":
+            if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
+                action[:3] = action[:3] * self._move_speed
+                action[:3] = [-action[1], action[0], action[2]]
+                gripper_pos = self.sim.data.get_body_xpos("right_hand")
+                d_pos = self._bounded_d_pos(action[:3], gripper_pos)
+                self._initial_right_hand_quat = T.euler_to_quat(
+                    action[3:6] * self._rotate_speed, self._initial_right_hand_quat
+                )
+                d_quat = T.quat_multiply(
+                    T.quat_inverse(self._right_hand_quat), self._initial_right_hand_quat
+                )
+                gripper_dis = action[-2]
+                action = np.concatenate([d_pos, d_quat, [gripper_dis]])
+
+            elif self._agent_type == "Baxter":
+                action[:3] = action[:3] * self._move_speed
+                action[:3] = [-action[1], action[0], action[2]]
+                action[6:9] = action[6:9] * self._move_speed
+                action[6:9] = [-action[7], action[6], action[8]]
+                right_gripper_pos = self.sim.data.get_body_xpos("right_hand")
+                right_d_pos = self._bounded_d_pos(action[:3], right_gripper_pos)
+                self._initial_right_hand_quat = T.euler_to_quat(
+                    action[3:6] * self._rotate_speed, self._initial_right_hand_quat
+                )
+                right_d_quat = T.quat_multiply(
+                    T.quat_inverse(self._right_hand_quat), self._initial_right_hand_quat
+                )
+
+                right_gripper_dis = action[-3]
+                left_gripper_pos = self.sim.data.get_body_xpos("left_hand")
+                left_d_pos = self._bounded_d_pos(action[6:9], left_gripper_pos)
+                self._initial_left_hand_quat = T.euler_to_quat(
+                    action[9:12] * self._rotate_speed, self._initial_left_hand_quat
+                )
+                left_d_quat = T.quat_multiply(
+                    T.quat_inverse(self._left_hand_quat), self._initial_left_hand_quat
+                )
+                left_gripper_dis = action[-2]
+                action = np.concatenate(
+                    [
+                        right_d_pos,
+                        right_d_quat,
+                        left_d_pos,
+                        left_d_quat,
+                        [right_gripper_dis, left_gripper_dis],
+                    ]
+                )
+
+            input_1 = self._make_input(action[:7], self._right_hand_quat)
+            if self._agent_type in ["Sawyer", "Panda"]:
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities, action[7:8]])
+            elif self._agent_type == "Jaco":
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities] + [action[7:]] * 3)
+            elif self._agent_type == "HDT":
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities] + [action[7:]] * 3)                
+            elif self._agent_type == "Baxter":
+                input_2 = self._make_input(action[7:14], self._left_hand_quat)
+                velocities = self._controller.get_control(input_1, input_2)
+                low_action = np.concatenate([velocities, action[14:16]])
+            else:
+                raise Exception(
+                    "Only Sawyer, Panda, Jaco, HDT, Baxter robot environments are supported for IK "
+                    "control currently."
+                )
+
+            # keep trying to reach the target in a closed-loop
+            ctrl = self._setup_action(low_action)
+            for i in range(self._action_repeat):
+                self._do_simulation(ctrl)
+
+                if i + 1 < self._action_repeat:
+                    velocities = self._controller.get_control()
+                    if self._agent_type in ["Sawyer", "Panda"]:
+                        low_action = np.concatenate([velocities, action[7:]])
+                    elif self._agent_type == "Jaco":
+                        low_action = np.concatenate([velocities] + [action[7:]] * 3)
+                    elif self._agent_type == "HDT":
+                        low_action = np.concatenate([velocities] + [action[7:]] * 3)                        
+                    elif self._agent_type == "Baxter":
+                        low_action = np.concatenate([velocities, action[14:]])
+                    ctrl = self._setup_action(low_action)
+
+        elif self._control_type == "ik_quaternion":
+            arm_pos = {}
+            arm_quat = {}
+            gripper_action = {}
+            last = 0
+            for arm in self._arms:
+                d_pos = action[last : last + 3] * self._move_speed
+                d_pos = [-d_pos[1], d_pos[0], d_pos[2]]
+                gripper_pos = self.sim.data.get_body_xpos("%s_hand" % arm)
+                d_pos = self._bounded_d_pos(d_pos, gripper_pos)
+                arm_pos[arm] = d_pos
+                arm_quat[arm] = T.convert_quat(action[last + 3 : last + 7])
+                last += 7
+
+            for arm in self._arms:
+                gripper_action[arm] = [action[last]]
+                last += 1
+
+            action_items = []
+            for arm in self._arms:
+                action_items.append(arm_pos[arm])
+                action_items.append(arm_quat[arm])
+            action = np.hstack(action_items)
+
+            action_items = []
+            for arm in self._arms:
+                action_items.append(gripper_action[arm])
+            gripper_action = np.hstack(action_items)
+
+            input_1 = self._make_input(action[:7], self._right_hand_quat)
+            if self._agent_type in ["Sawyer", "Panda"]:
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities, gripper_action])
+            elif self._agent_type == "Jaco":
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities] + [gripper_action] * 3)
+            elif self._agent_type == "HDT":
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities] + [gripper_action] * 3)                
+            elif self._agent_type == "Baxter":
+                input_2 = self._make_input(action[7:14], self._left_hand_quat)
+                velocities = self._controller.get_control(input_1, input_2)
+                low_action = np.concatenate([velocities, gripper_action])
+            else:
+                raise Exception(
+                    "Only Sawyer, Panda, Jaco, HDT, Baxter robot environments are supported for IK "
+                    "control currently."
+                )
+
+            # keep trying to reach the target in a closed-loop
+            ctrl = self._setup_action(low_action)
+            for i in range(self._action_repeat):
+                self._do_simulation(ctrl)
+
+                if i + 1 < self._action_repeat:
+                    velocities = self._controller.get_control()
+                    if self._agent_type in ["Sawyer", "Panda"]:
+                        low_action = np.concatenate([velocities, gripper_action])
+                    elif self._agent_type == "Jaco":
+                        low_action = np.concatenate([velocities] + [gripper_action] * 3)
+                    elif self._agent_type == "HDT":
+                        low_action = np.concatenate([velocities] + [gripper_action] * 3)                        
+                    elif self._agent_type == "Baxter":
+                        low_action = np.concatenate([velocities, gripper_action])
+                    ctrl = self._setup_action(low_action)
+
+    def _do_controller_step(self, action):
+        """
+        Take multiple physics simulation steps, bounded by self._control_timestep
+        """
+        if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
+            action[:3] = action[:3] * self._move_speed
+            action[:3] = [-action[1], action[0], action[2]]
+        elif self._agent_type == "Baxter":
+            action[:3] = action[:3] * self._move_speed
+            action[:3] = [-action[1], action[0], action[2]]
+            action[6:9] = action[6:9] * self._move_speed
+            action[6:9] = [-action[7], action[6], action[8]]
+
+        try:
+            self.sim.forward()
+            for i in range(int(self._control_timestep / self._model_timestep)):
+                self._pre_action(action, policy_step=(i == 0))
+                self.sim.step()
+
+            self._cur_time += self._control_timestep
 
         except Exception as e:
             logger.warn(
@@ -2526,7 +2883,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         Returns the cursor positions
         """
         if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT", "Baxter"]:
-            return self.sim.data.site_xpos[self.eef_site_id]
+            return self.sim.data.site_xpos[self.eef_site_id["right"]]
         elif self._agent_type == "Cursor":
             if name:
                 return self._get_pos(name)
@@ -2733,7 +3090,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         Returns a numpy array of joint positions.
         Sawyer robots have 7 joints and positions are in rotation angles.
         """
-        return self.sim.data.qpos[self._ref_joint_pos_indexes]
+        return self.sim.data.qpos[self._ref_joint_pos_indexes_all]
 
     @property
     def _joint_velocities(self):
@@ -2741,7 +3098,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         Returns a numpy array of joint velocities.
         Sawyer robots have 7 joints and velocities are angular velocities.
         """
-        return self.sim.data.qvel[self._ref_joint_vel_indexes]
+        return self.sim.data.qvel[self._ref_joint_vel_indexes_all]
 
     def _robot_jpos_getter(self):
         return np.array(self._joint_positions)
@@ -2753,20 +3110,23 @@ class FurnitureEnv(metaclass=EnvMeta):
         arm_action = action[: self.mujoco_robot.dof]
         if self._agent_type in ["Sawyer", "Panda", "Jaco", "HDT"]:
             gripper_action_in = action[
-                self.mujoco_robot.dof : self.mujoco_robot.dof + self.gripper.dof
+                self.mujoco_robot.dof : self.mujoco_robot.dof
+                + self.gripper["right"].dof
             ]
-            gripper_action_actual = self.gripper.format_action(gripper_action_in)
+            gripper_action_actual = self.gripper["right"].format_action(
+                gripper_action_in
+            )
             action = np.concatenate([arm_action, gripper_action_actual])
 
         elif self._agent_type == "Baxter":
             last = self.mujoco_robot.dof  # Degrees of freedom in arm, i.e. 14
-            gripper_right_action_in = action[last : last + self.gripper_right.dof]
-            last = last + self.gripper_right.dof
-            gripper_left_action_in = action[last : last + self.gripper_left.dof]
-            gripper_right_action_actual = self.gripper_right.format_action(
+            gripper_right_action_in = action[last : last + self.gripper["right"].dof]
+            last = last + self.gripper["right"].dof
+            gripper_left_action_in = action[last : last + self.gripper["left"].dof]
+            gripper_right_action_actual = self.gripper["right"].format_action(
                 gripper_right_action_in
             )
-            gripper_left_action_actual = self.gripper_left.format_action(
+            gripper_left_action_actual = self.gripper["left"].format_action(
                 gripper_left_action_in
             )
             action = np.concatenate(
@@ -2784,8 +3144,8 @@ class FurnitureEnv(metaclass=EnvMeta):
 
         # gravity compensation
         self.sim.data.qfrc_applied[
-            self._ref_joint_vel_indexes
-        ] = self.sim.data.qfrc_bias[self._ref_joint_vel_indexes]
+            self._ref_joint_vel_indexes_all
+        ] = self.sim.data.qfrc_bias[self._ref_joint_vel_indexes_all]
 
         return applied_action
 

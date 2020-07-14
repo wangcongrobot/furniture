@@ -181,11 +181,11 @@ def main(args):
             env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos["qpos"]
             env.sim.data.qpos[env._ref_gripper_joint_pos_indexes] = qpos["l_gripper"]
         elif env._agent_type == "Baxter":
-            env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos["qpos"]
-            env.sim.data.qpos[env._ref_gripper_right_joint_pos_indexes] = qpos[
+            env.sim.data.qpos[env._ref_joint_pos_indexes_all] = qpos["qpos"]
+            env.sim.data.qpos[env._ref_gripper_joint_pos_indexes["right"]] = qpos[
                 "r_gripper"
             ]
-            env.sim.data.qpos[env._ref_gripper_left_joint_pos_indexes] = qpos[
+            env.sim.data.qpos[env._ref_gripper_joint_pos_indexes["left"]] = qpos[
                 "l_gripper"
             ]
         elif env._agent_type == "Cursor":

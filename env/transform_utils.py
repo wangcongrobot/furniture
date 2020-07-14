@@ -357,6 +357,29 @@ def mat2quat(rmat, precise=False):
     return q[[1, 2, 3, 0]]
 
 
+def euler2mat(euler):  # assume xyz
+    euler = np.asarray(euler, dtype=np.float64)
+    assert euler.shape[-1] == 3, "Invalid shaped euler {}".format(euler)
+
+    ai, aj, ak = -euler[..., 2], -euler[..., 1], -euler[..., 0]
+    si, sj, sk = np.sin(ai), np.sin(aj), np.sin(ak)
+    ci, cj, ck = np.cos(ai), np.cos(aj), np.cos(ak)
+    cc, cs = ci * ck, ci * sk
+    sc, ss = si * ck, si * sk
+
+    mat = np.empty(euler.shape[:-1] + (3, 3), dtype=np.float64)
+    mat[..., 2, 2] = cj * ck
+    mat[..., 2, 1] = sj * sc - cs
+    mat[..., 2, 0] = sj * cc + ss
+    mat[..., 1, 2] = cj * sk
+    mat[..., 1, 1] = sj * ss + cc
+    mat[..., 1, 0] = sj * cs - sc
+    mat[..., 0, 2] = -sj
+    mat[..., 0, 1] = cj * si
+    mat[..., 0, 0] = cj * ci
+    return mat
+
+
 def rotation_matrix(angle, direction, point=None):
     """
     Returns matrix to rotate about axis defined by point and direction.
@@ -590,15 +613,20 @@ def quaternion_to_euler(x, y, z, w):
     Z = math.degrees(math.atan2(t3, t4))
     return X, Y, Z
 
+
 def euler_to_quat(rotation, quat=None):
     """ Returns a quaternion of a euler rotation """
     q1 = Quaternion(axis=[1, 0, 0], degrees=rotation[0])
     q2 = Quaternion(axis=[0, 1, 0], degrees=rotation[1])
     q3 = Quaternion(axis=[0, 0, 1], degrees=rotation[2])
+    q = q3 * q2 * q1
+    # q = Quaternion(
+    #     convert_quat(mat2quat(euler2mat(np.array(rotation) / 180.0 * np.pi)), to="wxyz")
+    # )
     if quat is None:
-        final_quat = list(q3 * q2 * q1)
+        final_quat = list(q)
     else:
-        final_quat = list(Quaternion(quat) * q3 * q2 * q1)
+        final_quat = list(Quaternion(quat) * q)
     return final_quat
 
 
@@ -669,6 +697,7 @@ def angle_between(v1, v2):
     v1_u = unit_vector(v1)
     v2_u = unit_vector(v2)
     return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
+
 
 def cos_dist(a, b):
     """ Returns cos distance between vectors @a and @b """
