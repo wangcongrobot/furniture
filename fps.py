@@ -10,7 +10,7 @@ from util import str2bool
 
 
 # available agents
-agent_names = ['Baxter', 'Sawyer', 'Cursor']
+agent_names = ['Baxter', 'Sawyer', 'HDT', 'Cursor']
 
 # available furnitures
 furniture_names

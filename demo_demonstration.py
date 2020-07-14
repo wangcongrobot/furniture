@@ -15,7 +15,7 @@ from util.video_recorder import VideoRecorder
 
 
 # available agents
-agent_names = ['Baxter', 'Sawyer', 'Cursor']
+agent_names = ['Baxter', 'Sawyer', 'HDT' 'Cursor']
 
 # available furnitures
 furniture_names
@@ -91,8 +91,8 @@ def main(args):
         demo_path = input('Enter the path to your demo (e.g. demos/test.pkl):  ')
         args.load_demo = demo_path
 
-        agent_name = input("What was the agent (Sawyer, Baxter, Cursor)?: ")
-        assert agent_name in ['Sawyer', 'Baxter', 'Cursor']
+        agent_name = input("What was the agent (Sawyer, HDT, Baxter, Cursor)?: ")
+        assert agent_name in ['Sawyer', 'HDT', 'Baxter', 'Cursor']
 
         furniture_id = int(input("What was the furniture id?: "))
         furniture_name = furniture_names[furniture_id]

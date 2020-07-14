@@ -18,7 +18,7 @@ from util.video_recorder import VideoRecorder
 
 
 # available agents
-agent_names = ['Baxter', 'Sawyer', 'Cursor']
+agent_names = ['Baxter', 'Sawyer', 'HDT', 'Cursor']
 
 # available furnitures
 furniture_names
@@ -165,6 +165,9 @@ def main(args):
         if env._agent_type == 'Sawyer':
             env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos['sawyer_qpos']
             env.sim.data.qpos[env._ref_gripper_joint_pos_indexes] = qpos['l_gripper']
+        elif env._agent_type == 'HDT':
+            env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos['sawyer_qpos']
+            env.sim.data.qpos[env._ref_gripper_joint_pos_indexes] = qpos['l_gripper']            
         elif env._agent_type == 'Baxter':
             env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos['baxter_qpos']
             env.sim.data.qpos[env._ref_gripper_right_joint_pos_indexes] = qpos['r_gripper']

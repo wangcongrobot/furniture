@@ -64,7 +64,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         self._screen_width = config.screen_width
         self._screen_height = config.screen_height
 
-        self._agent_type = config.agent_type # ['baxter', 'sawyer', 'cursor']
+        self._agent_type = config.agent_type # ['baxter', 'sawyer', 'hdt', 'cursor']
         self._control_type = config.control_type # ['ik', 'impedance']
         self._control_freq = config.control_freq # reduce freq -> longer timestep
         self._rescale_actions = config.rescale_actions
@@ -98,7 +98,7 @@ class FurnitureEnv(metaclass=EnvMeta):
 
         self._preassembled = config.preassembled
 
-        if self._agent_type in ['Sawyer', 'Baxter'] and self._control_type == 'ik':
+        if self._agent_type in ['Sawyer', 'HDT', 'Baxter'] and self._control_type == 'ik':
             self._min_gripper_pos = np.array([-1.5, -1.5, 0.])
             self._max_gripper_pos = np.array([1.5, 1.5, 1.5])
             self._action_repeat = 5
@@ -239,7 +239,7 @@ class FurnitureEnv(metaclass=EnvMeta):
             self._step_discrete(a)
             self._do_simulation(None)
 
-        elif self._agent_type in ['Sawyer', 'Baxter'] and self._control_type == 'ik':
+        elif self._agent_type in ['Sawyer', 'HDT', 'Baxter'] and self._control_type == 'ik':
             self._step_continuous(a)
 
         elif self._control_type == 'torque':
@@ -873,7 +873,7 @@ class FurnitureEnv(metaclass=EnvMeta):
 
     def _step_continuous(self, action):
         """
-        Step function for continuous control, like Sawyer and Baxter
+        Step function for continuous control, like Sawyer, HDT and Baxter
         """
         connect = action[-1]
         if self._control_type == 'ik':
@@ -882,6 +882,18 @@ class FurnitureEnv(metaclass=EnvMeta):
             self.sim.forward()
 
             if self._agent_type == "Sawyer":
+                action[:3] = action[:3] * self._move_speed
+                action[:3] = [-action[1], action[0], action[2]]
+                gripper_pos = self.sim.data.get_body_xpos('right_hand')
+                d_pos = self._bounded_d_pos(action[:3], gripper_pos)
+                self._initial_right_hand_quat = T.euler_to_quat(action[3:6] * self._rotate_speed,
+                                                                self._initial_right_hand_quat)
+                d_quat = T.quat_multiply(T.quat_inverse(self._right_hand_quat),
+                                         self._initial_right_hand_quat)
+                gripper_dis = action[-2]
+                action = np.concatenate([d_pos, d_quat, [gripper_dis]])
+
+            elif self._agent_type == "HDT":
                 action[:3] = action[:3] * self._move_speed
                 action[:3] = [-action[1], action[0], action[2]]
                 gripper_pos = self.sim.data.get_body_xpos('right_hand')
@@ -920,13 +932,16 @@ class FurnitureEnv(metaclass=EnvMeta):
             if self._agent_type == "Sawyer":
                 velocities = self._controller.get_control(**input_1)
                 low_action = np.concatenate([velocities, action[7:8]])
+            elif self._agent_type == "HDT":
+                velocities = self._controller.get_control(**input_1)
+                low_action = np.concatenate([velocities, action[7:]] * 3)                
             elif self._agent_type == "Baxter":
                 input_2 = self._make_input(action[7:14], self._left_hand_quat)
                 velocities = self._controller.get_control(input_1, input_2)
                 low_action = np.concatenate([velocities, action[14:16]])
             else:
                 raise Exception(
-                    "Only Sawyer and Baxter robot environments are supported for IK "
+                    "Only Sawyer, HDT and Baxter robot environments are supported for IK "
                     "control currently."
                 )
 
@@ -939,6 +954,8 @@ class FurnitureEnv(metaclass=EnvMeta):
                     velocities = self._controller.get_control()
                     if self._agent_type == 'Sawyer':
                         low_action = np.concatenate([velocities, action[7:]])
+                    elif self._agent_type == 'HDT':
+                        low_action = np.concatenate([velocities, action[7:]] * 3)                        
                     elif self._agent_type == 'Baxter':
                         low_action = np.concatenate([velocities, action[14:]])
                     ctrl = self._setup_action(low_action)
