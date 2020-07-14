@@ -96,9 +96,9 @@ class FurnitureHDTEnv(FurnitureEnv):
 
         # set two bodies for picking or assemblying
         id1 = self.sim.model.eq_obj1id[0]
-        id2 = self.sim.model.eq_obj2id[0]
+        # id2 = self.sim.model.eq_obj2id[0]
         self._target_body1 = self.sim.model.body_id2name(id1)
-        self._target_body2 = self.sim.model.body_id2name(id2)
+        # self._target_body2 = self.sim.model.body_id2name(id2)
 
     def _get_obs(self):
         """

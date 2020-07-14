@@ -93,7 +93,7 @@ class Trainer(object):
                 os.environ["WANDB_MODE"] = "dryrun"
 
             # user or team name
-            entity = "clvr"
+            entity = "wangcongrobot"
             # project name
             project = "furniture"
 

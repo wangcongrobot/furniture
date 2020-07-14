@@ -30,6 +30,7 @@ def create_parser(env=None):
             "FurnitureSawyerPickEnv",
             "FurnitureSawyerGenEnv",
             "FurnitureBaxterToyTableEnv",
+            "FurnitureHDTPickEnv"
         ],
         help="Environment name",
     )
@@ -208,6 +209,9 @@ def get_env_specific_argument(env):
 
     elif env == "FurnitureSawyerPickEnv":
         import config.furniture_sawyer_pick as f
+
+    elif env == "FurnitureHDTPickEnv":
+        import config.furniture_hdt_pick as f
 
     return f
 

@@ -10,6 +10,8 @@ from env.furniture_jaco import FurnitureJacoEnv
 from env.furniture_panda import FurniturePandaEnv
 from env.furniture_hdt import FurnitureHDTEnv
 
+from env.furniture_hdt_pick import FurnitureHDTPickEnv
+
 from env.furniture_baxter_block import FurnitureBaxterBlockEnv
 from env.furniture_cursor_toytable import FurnitureCursorToyTableEnv
 from env.furniture_sawyer_toytable import FurnitureSawyerToyTableEnv
