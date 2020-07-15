@@ -1,0 +1,45 @@
+<mujoco model="hdt_gripper">
+    <asset>
+        <mesh name="H022927 - A35 PINCER FINGER, LONG, OVERMOLD ASSY - SHAREABLE" file="meshes/hdt_gripper/H022927 - A35 PINCER FINGER, LONG, OVERMOLD ASSY - SHAREABLE.STL" />
+    </asset>
+    <actuator>
+        <!--Gripper-->
+        <!-- position control mode -->
+        <position name='gripper_hdt_pincer_joint1' ctrllimited="true" kp="50" joint='hdt_pincer_joint1' ctrlrange='0 0.5'/>
+        <position name='gripper_hdt_pincer_joint2' ctrllimited="true" kp="50" joint='hdt_pincer_joint2' ctrlrange='0 0.5'/>
+
+    </actuator>
+
+    <contact>
+        <!-- <exclude body1="hdt_gripper" body2="pincer_link1"></exclude> -->
+        <!-- <exclude body1="hdt_gripper" body2="pincer_link2"></exclude> -->
+        <!-- <exclude body1="pincer_link1" body2="pincer_link2"></exclude> -->
+    </contact>
+
+    <worldbody>
+
+        <body name="hdt_gripper" pos="0 0 0">
+            <!-- for test with single gripper -->
+            <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-6 1e-6 1e-6" />
+
+            <!-- This site was added for visualization. -->
+            <site name="grip_site" pos="0 0 0.1050" size="0.01 0.01 0.01" rgba="1 0 0 1" type="sphere" group="1"/>
+            <!-- This site was added for visualization. -->
+            <site name="grip_site_cylinder" pos="0 0 0.1399" size="0.005 10" rgba="0 1 0 0.3" type="cylinder" group="1"/>            
+        
+            <body name="pincer_link1" pos="0.0135 0 0.0375" quat="0.5 -0.5 -0.5 -0.5">
+                <inertial pos="0.0607647 0.00559547 -3.99908e-06" quat="0.0177323 0.706938 -0.0180733 0.706822" mass="0.0659882" diaginertia="0.00012599 0.000120886 7.08563e-06" />
+                <joint name="hdt_pincer_joint1" pos="0 0 0" axis="0 0 1" limited="true" range="0 0.9" damping="100" />
+                <geom name="pincer_link1_collision" quat="0 1 0 0" type="mesh" mesh="H022927 - A35 PINCER FINGER, LONG, OVERMOLD ASSY - SHAREABLE" />
+                <geom name="pincer_link1_visual" quat="0 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.784314 0.784314 0.784314 1" mesh="H022927 - A35 PINCER FINGER, LONG, OVERMOLD ASSY - SHAREABLE" />
+            </body>
+
+            <body name="pincer_link2" pos="-0.0135 0 0.0375" quat="0.5 0.5 -0.5 0.5">
+                <inertial pos="0.0607647 0.00559547 -3.99908e-06" quat="0.0177323 0.706938 -0.0180733 0.706822" mass="0.0659882" diaginertia="0.00012599 0.000120886 7.08563e-06" />
+                <joint name="hdt_pincer_joint2" pos="0 0 0" axis="0 0 1" limited="true" range="0 1" damping="100" />
+                <geom name="pincer_link2_collision" quat="0 1 0 0" type="mesh" mesh="H022927 - A35 PINCER FINGER, LONG, OVERMOLD ASSY - SHAREABLE" />
+                <geom name="pincer_link2_visual" quat="0 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.784314 0.784314 0.784314 1" mesh="H022927 - A35 PINCER FINGER, LONG, OVERMOLD ASSY - SHAREABLE" />
+            </body>
+        </body>
+    </worldbody>
+</mujoco>

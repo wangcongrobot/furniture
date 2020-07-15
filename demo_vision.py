@@ -166,7 +166,7 @@ def main(args):
             env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos['sawyer_qpos']
             env.sim.data.qpos[env._ref_gripper_joint_pos_indexes] = qpos['l_gripper']
         elif env._agent_type == 'HDT':
-            env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos['sawyer_qpos']
+            env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos['hdt_qpos']
             env.sim.data.qpos[env._ref_gripper_joint_pos_indexes] = qpos['l_gripper']            
         elif env._agent_type == 'Baxter':
             env.sim.data.qpos[env._ref_joint_pos_indexes] = qpos['baxter_qpos']

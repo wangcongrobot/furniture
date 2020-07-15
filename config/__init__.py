@@ -13,6 +13,7 @@ def argparser():
     parser.add_argument('--env', type=str, default='FurnitureBaxterEnv',
                         choices=['FurnitureBaxterEnv',
                                  'FurnitureSawyerEnv',
+                                 'FurnitureHDTEnv',
                                  'FurnitureCursorEnv',
                                  'FurnitureBaxterBlockEnv'],
                         help='Environment name')

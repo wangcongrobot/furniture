@@ -23,6 +23,7 @@ recordings
 # Mujoco
 MUJOCO_LOG.TXT
 /unity-xml
+/unity-log
 
 # Unity
 UnitySDK.log
@@ -75,3 +76,9 @@ wandb/
 
 ## flake8
 .flake8
+
+method/
+il/
+ubuntu_binary.zip
+__MACOSX__/
+.vscode/

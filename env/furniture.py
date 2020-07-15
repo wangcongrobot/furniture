@@ -1163,6 +1163,9 @@ class FurnitureEnv(metaclass=EnvMeta):
             if self._agent_type == 'Sawyer':
                 self.sim.data.qpos[self._ref_joint_pos_indexes] = init_qpos['sawyer_qpos']
                 self.sim.data.qpos[self._ref_gripper_joint_pos_indexes] = init_qpos['l_gripper']
+            elif self._agent_type == 'HDT':
+                self.sim.data.qpos[self._ref_joint_pos_indexes] = init_qpos['hdt_qpos']
+                self.sim.data.qpos[self._ref_gripper_joint_pos_indexes] = init_qpos['l_gripper']                
             elif self._agent_type == 'Baxter':
                 self.sim.data.qpos[self._ref_joint_pos_indexes] = init_qpos['baxter_qpos']
                 self.sim.data.qpos[self._ref_gripper_right_joint_pos_indexes] = init_qpos['r_gripper']
@@ -1223,7 +1226,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         if self._record_demo:
             self._store_qpos()
 
-        if self._agent_type in ['Sawyer', 'Baxter']:
+        if self._agent_type in ['Sawyer', 'HDT', 'Baxter']:
             self._initial_right_hand_quat = self._right_hand_quat
             if self._agent_type == 'Baxter':
                 self._initial_left_hand_quat = self._left_hand_quat
@@ -1253,7 +1256,9 @@ class FurnitureEnv(metaclass=EnvMeta):
         if self._agent_type == 'Sawyer':
             self.sim.data.qpos[self._ref_joint_pos_indexes] = self.mujoco_robot.init_qpos + noise
             self.sim.data.qpos[self._ref_gripper_joint_pos_indexes] = -self.gripper.init_qpos # open
-
+        elif self._agent_type == 'HDT':
+            self.sim.data.qpos[self._ref_joint_pos_indexes] = self.mujoco_robot.init_qpos + noise
+            self.sim.data.qpos[self._ref_gripper_joint_pos_indexes] = -self.gripper.init_qpos # open
         elif self._agent_type == 'Baxter':
             self.sim.data.qpos[self._ref_joint_pos_indexes] = self.mujoco_robot.init_qpos + noise
             self.sim.data.qpos[self._ref_gripper_right_joint_pos_indexes] = -self.gripper_right.init_qpos
@@ -1272,6 +1277,11 @@ class FurnitureEnv(metaclass=EnvMeta):
                 'sawyer_qpos': self.sim.data.qpos[self._ref_joint_pos_indexes],
                 'l_gripper': self.sim.data.qpos[self._ref_gripper_joint_pos_indexes]
             }
+        elif self._agent_type == 'HDT':
+            qpos = {
+                'hdt_qpos': self.sim.data.qpos[self._ref_joint_pos_indexes],
+                'l_gripper': self.sim.data.qpos[self._ref_gripper_joint_pos_indexes]
+            }            
         elif self._agent_type == 'Baxter':
             qpos = {
                 'r_gripper': self.sim.data.qpos[self._ref_gripper_right_joint_pos_indexes],
@@ -1340,6 +1350,13 @@ class FurnitureEnv(metaclass=EnvMeta):
                     bullet_data_path=os.path.join(env.models.assets_root, "bullet_data"),
                     robot_jpos_getter=self._robot_jpos_getter,
                 )
+            elif self._agent_type == 'HDT':
+                import env.models
+                from env.controllers import HDTIKController
+                self._controller = HDTIKController(
+                    bullet_data_path=os.path.join(env.models.assets_root, "bullet_data"),
+                    robot_jpos_getter=self._robot_jpos_getter,
+                )
 
             elif self._agent_type == 'Baxter':
                 import env.models
@@ -1362,7 +1379,15 @@ class FurnitureEnv(metaclass=EnvMeta):
             self.mujoco_robot.add_gripper("right_hand", self.gripper)
             self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
             self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
-
+        elif self._agent_type == 'HDT':
+            from env.models.robots import HDT
+            from env.models.grippers import gripper_factory
+            self.mujoco_robot = HDT()
+            self.gripper = gripper_factory("HDTGripper")
+            self.gripper.hide_visualization()
+            self.mujoco_robot.add_gripper("right_hand", self.gripper)
+            self.mujoco_robot.set_base_xpos([0, 0.65, -0.7])
+            self.mujoco_robot.set_base_xquat([1, 0, 0, -1])
         elif self._agent_type == 'Baxter':
             from env.models.robots import Baxter
             from env.models.grippers import gripper_factory
@@ -1582,6 +1607,9 @@ class FurnitureEnv(metaclass=EnvMeta):
             if self._agent_type == 'Sawyer':
                 self.sim.data.qpos[self._ref_joint_pos_indexes] = qpos['sawyer_qpos']
                 self.sim.data.qpos[self._ref_gripper_joint_pos_indexes] = qpos['l_gripper']
+            elif self._agent_type == 'HDT':
+                self.sim.data.qpos[self._ref_joint_pos_indexes] = qpos['hdt_qpos']
+                self.sim.data.qpos[self._ref_gripper_joint_pos_indexes] = qpos['l_gripper']                
             elif self._agent_type == 'Baxter':
                 self.sim.data.qpos[self._ref_joint_pos_indexes] = qpos['baxter_qpos']
                 self.sim.data.qpos[self._ref_gripper_right_joint_pos_indexes] = qpos['r_gripper']
@@ -1694,6 +1722,9 @@ class FurnitureEnv(metaclass=EnvMeta):
                 if self._agent_type == 'Sawyer':
                     action = action[:8]
                     action[6] = flag[0]
+                elif self._agent_type == 'HDT':
+                    action = action[:8]
+                    action[6] = flag[0]                    
                 elif self._agent_type == 'Baxter':
                     if cursor_idx:
                         action = np.hstack([np.zeros(6), action[:6], [flag[0], flag[1], action[7]]])
@@ -1904,7 +1935,7 @@ class FurnitureEnv(metaclass=EnvMeta):
         """
         Returns the cursor positions
         """
-        if self._agent_type in ['Sawyer', 'Baxter']:
+        if self._agent_type in ['Sawyer', 'HDT', 'Baxter']:
             return self.sim.data.site_xpos[self.eef_site_id]
         elif self._agent_type == 'Cursor':
             if name:
@@ -2128,6 +2159,12 @@ class FurnitureEnv(metaclass=EnvMeta):
 
         arm_action = action[: self.mujoco_robot.dof]
         if self._agent_type == 'Sawyer':
+            gripper_action_in = action[
+                self.mujoco_robot.dof : self.mujoco_robot.dof + self.gripper.dof
+            ]
+            gripper_action_actual = self.gripper.format_action(gripper_action_in)
+            action = np.concatenate([arm_action, gripper_action_actual])
+        elif self._agent_type == 'HDT':
             gripper_action_in = action[
                 self.mujoco_robot.dof : self.mujoco_robot.dof + self.gripper.dof
             ]

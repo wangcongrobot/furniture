@@ -122,7 +122,7 @@ def test_all(args):
     Measure FPS of all configurations.
     """
 
-    agent_types = ['Baxter_ik', 'Baxter_impedance', 'Sawyer_ik', 'Sawyer_impedance', 'Cursor_ik']
+    agent_types = ['Baxter_ik', 'Baxter_impedance', 'Sawyer_ik', 'Sawyer_impedance', 'hdt_ik', 'hdt_impedance', 'Cursor_ik']
     rendering_qualities = ['no_200', 'low_200', 'high_200', 'low_500', 'high_500']
     furniture_ids = [0, 9, 6]
 
